@@ -3,7 +3,7 @@
     "plugin_id": "headless_browser",
     "uninstallable": true,
     "version": "1.0.0",
-    "author": "KiraAI Community",
+    "author": "nyx",
     "description": "让 AI 能够控制无头浏览器进行网页浏览、截图、下载等操作",
     "repo": null
 }
