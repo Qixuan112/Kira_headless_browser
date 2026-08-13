@@ -221,6 +221,11 @@ class HeadlessBrowserPlugin(BasePlugin):
         self.screenshot_auto_clean: bool = bool(cfg.get("screenshot_auto_clean", True))  # 自动清理开关
         # Cookie目录：存放各网站的cookie JSON文件，启动时自动加载
         self.cookies_dir = cfg.get("cookies_dir", "data/files/cookie")
+        # 上传限制：默认允许上传任意目录；关闭后仅允许 upload_allowed_dirs 中的目录
+        self.upload_allow_any_path: bool = bool(cfg.get("upload_allow_any_path", True))
+        self.upload_allowed_dirs = [
+            d.strip() for d in str(cfg.get("upload_allowed_dirs", "data/files\ndata/temp")).splitlines() if d.strip()
+        ]
         
         # 浏览器实例
         self._playwright = None
@@ -356,7 +361,9 @@ class HeadlessBrowserPlugin(BasePlugin):
                                     continue
                                 if not all(k in c for k in ("name", "value", "domain")):
                                     logger.warning(
-                                        f"[HeadlessBrowser] cookie缺少必要字段，已跳过: {c}"
+                                        "[HeadlessBrowser] cookie缺少必要字段，已跳过: 文件=%s，字段=%s",
+                                        os.path.basename(cookie_file),
+                                        sorted(c.keys()),
                                     )
                                     continue
                                 ss_raw = str(c.get('sameSite', 'Lax')).lower()
@@ -836,19 +843,29 @@ class HeadlessBrowserPlugin(BasePlugin):
     async def upload_file(self, event, selector: str, file_path: str) -> str:
         """
         上传文件到文件输入框，使用 Playwright setInputFiles 绕过系统文件对话框。
-
-        出于安全考虑，仅允许上传插件数据目录内的文件，避免本地敏感文件被外传。
+        默认允许上传任意目录；可通过配置关闭并限定可上传目录，避免本地敏感文件被外传。
         """
         await self._ensure_browser()
         try:
-            # 安全限制：仅允许上传插件数据目录内的文件
+            # 文件必须存在且为常规文件
             resolved = os.path.realpath(file_path)
-            allowed_root = os.path.realpath(str(self.ctx.get_plugin_data_dir()))
-            if not resolved.startswith(allowed_root + os.sep):
-                return f"❌ 出于安全考虑，仅允许上传 {allowed_root} 下的文件"
             if not os.path.isfile(resolved):
                 return f"❌ 文件不存在或不是常规文件: {file_path}"
-            
+
+            # 路径限制：默认放开（upload_allow_any_path=True）；关闭后仅允许白名单目录
+            if not self.upload_allow_any_path:
+                allowed = False
+                for d in self.upload_allowed_dirs:
+                    root = os.path.realpath(d)
+                    try:
+                        if os.path.commonpath((root, resolved)) == root:
+                            allowed = True
+                            break
+                    except ValueError:
+                        continue
+                if not allowed:
+                    return f"❌ 出于安全考虑，仅允许上传以下目录中的文件: {', '.join(self.upload_allowed_dirs)}"
+
             # 使用 Playwright 的 set_input_files 上传文件（绕过系统文件对话框）
             await self._page.set_input_files(selector, resolved)
             return f"✅ 已上传文件到 {selector}: {os.path.basename(resolved)}"
