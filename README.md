@@ -198,6 +198,11 @@ playwright install chromium
 
 ### 文件管理
 
+- **`browser_upload_file`** - 上传文件到指定文件输入框（绕过系统文件对话框）
+  - `selector`: 文件输入框的 CSS 选择器（如 `#upload-files`、`input[type=file]`）
+  - `file_path`: 要上传的文件路径（**仅允许上传插件数据目录内的文件**，出于安全考虑会拒绝其他路径）
+  - 返回: 上传成功或失败的信息
+
 - **`browser_download`** - 下载文件（自动发送给用户）
   - `url`: 文件 URL
   - `filename`: 保存文件名（可选）
