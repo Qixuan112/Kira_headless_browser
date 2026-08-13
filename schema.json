@@ -65,5 +65,10 @@
     "type": "boolean",
     "default": true,
     "hint": "是否自动清理旧截图文件（true=开启自动清理，false=关闭）"
+  },
+  "cookies_dir": {
+    "type": "string",
+    "default": "data/files/cookie",
+    "hint": "Cookie文件存放目录，存放各网站的cookie JSON文件。插件启动时自动加载此目录下所有.json格式的cookie文件（如 chatgpt.json、claude.json 等）。目录不存在会自动创建，分享插件时此目录独立在外，不随插件打包，安全隔离。"
   }
 }
