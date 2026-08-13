@@ -4,6 +4,7 @@
     "uninstallable": true,
     "version": "1.1.0",
     "author": "nyx+znq19",
-    "description": "让 AI 能够控制无头浏览器进行网页浏览、截图、下载、上传等操作，支持通过给AI发送cookie半持久化登录各种账号",
-    "repo": "https://github.com/Qixuan112/Kira_headless_browser"
+    "description": "让 AI 能够控制无头浏览器进行网页浏览、截图、下载、上传等操作，支持自动加载 cookie 文件实现各账号的半持久化登录",
+    "repo": "https://github.com/Qixuan112/Kira_headless_browser",
+    "exclude": ["data/files/cookie/"]
 }
