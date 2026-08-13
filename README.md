@@ -1,6 +1,6 @@
-# 无头浏览器插件 (Headless Browser Plugin)
+# 无头浏览器插件 (Headless Browser Plugin) 1.1.0
 
-让 KiraAI 能够控制无头浏览器进行网页浏览、截图、下载等操作。
+让 KiraAI 能够控制无头浏览器进行网页浏览、截图、下载、上传等操作，支持自动加载 cookie 文件实现各账号的半持久化登录。
 
 ## 功能特性
 
@@ -8,9 +8,10 @@
 - 📸 **截图功能**: 截取页面或元素，自动发送给 AI 查看
 - 📁 **文件管理**: 下载文件、保存截图、发送文件给用户
 - 🔧 **JS执行**: 在页面中执行 JavaScript 代码
+- 🍪 **Cookie管理**: 自动加载 `data/files/cookie/` 目录下所有网站的 Cookie 文件，多站点独立存储，分享插件时安全隔离
 - ⚙️ **灵活配置**: 支持无头/可视模式、自定义视口、User-Agent 等
 
-## 安装依赖
+## 安装依赖（重要！第二行必须手动在cmd内输入，无法通过requirements.txt自动安装！）
 
 ```bash
 pip install playwright aiohttp
@@ -34,6 +35,9 @@ playwright install chromium
 | `vlm_model` | model_select | - | 选择用于描述截图的VLM模型（下拉框显示所有已配置模型） |
 | `vlm_describe_prompt` | string | - | 自定义VLM提示词（可选，未设置则使用默认模板） |
 | `vlm_timeout` | integer | `10` | VLM描述超时时间（秒） |
+| `cookies_dir` | string | `data/files/cookie` | Cookie文件存放目录，启动时自动加载该目录下所有 *.json 文件 |
+| `upload_allow_any_path` | switch | `true` | 是否允许上传任意目录的文件（true=允许任何路径，false=仅允许白名单目录） |
+| `upload_allowed_dirs` | list | `["data/files", "data/temp"]` | 允许上传的目录白名单（每行一个，仅在 `upload_allow_any_path=false` 时生效） |
 
 ### 截图发送模式
 
@@ -57,7 +61,7 @@ playwright install chromium
 截图后插件可以使用 VLM（视觉语言模型）自动分析截图内容，提取页面信息供后续 AI 调用工具使用。
 
 **重要说明：**
-由于技术限制，用于描述截图的 VLM 模型必须是 **LLM 类型**（不是图像类型）。即使模型支持视觉分析，也需要在 LLM 模型组中配置才能用于描述功能。
+基于KiraAI框架传统，用于描述截图的 VLM 模型必须是 **LLM 类型**（不是图像类型）。即使模型支持视觉分析，也需要在 LLM 模型组中配置才能用于描述功能。
 
 **配置步骤：**
 1. 在**提供商**设置中，将视觉模型（如 Qwen-VL）添加到 **大语言模型** 组（而不是图像组）
@@ -91,14 +95,14 @@ playwright install chromium
 - 表单字段：输入框、下拉菜单
 
 ### 3. 当前状态
-- 页面是否已完全加载
-- 是否有错误提示、弹窗、警告
-- 是否需要登录才能操作
+- 页面是否已完全加载？
+- 是否有错误提示、弹窗、警告？
+- 是否需要登录才能操作？
 
 ### 4. 关键内容
-- 页面的主要内容/搜索结果
-- 是否有验证码、人机验证
-- 是否有弹窗广告遮挡
+- 页面的主要内容/搜索结果是什么？
+- 是否有验证码、人机验证？
+- 是否有弹窗广告遮挡？
 
 ### 5. 建议的下一步操作
 - 如果要搜索：点击哪里、输入什么
@@ -113,6 +117,42 @@ playwright install chromium
 
 **自定义提示词：**
 如需覆盖默认模板，在插件配置中填写 `vlm_describe_prompt`。自定义提示词将完全替代默认模板。
+
+### 🍪 Cookie 管理
+
+插件支持自动加载 **多个网站** 的 Cookie，方便 AI 以已登录状态操作各类网站。
+
+**存储方式：**
+- Cookie 文件统一存放在 `data/files/cookie/` 目录
+- 每个网站一个独立的 JSON 文件，如 `chatgpt.json`、`claude.json`、`gemini.json`
+- 插件启动或浏览器重启时，自动扫描并加载该目录下所有 `*.json` 文件
+
+**文件格式（标准 Chrome 导出格式）：**
+```json
+[
+  {
+    "name": "session-token",
+    "value": "xxx",
+    "domain": ".chatgpt.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": true,
+    "sameSite": "Lax",
+    "expirationDate": 11451418881
+  }
+]
+```
+支持嵌套格式（如 `{"cookies": [...]}`），插件会自动解包。
+
+**如何使用：**
+1. 从浏览器扩展（如 EditThisCookie、Get cookies.txt）导出对应网站的 Cookie
+2. 保存为 JSON 文件，放入 `data/files/cookie/` 目录，插件启动时自动加载（cookie 值仅注入浏览器会话，不会出现在 AI 可见的上下文中）
+3. 建议按站点名命名方便管理，如 `chatgpt.json`
+4. 重载插件或重启 KiraAI 即可自动加载
+
+**安全隔离：**
+`data/files/cookie/` 目录位于项目数据目录下，**不随插件文件打包**：已在 `manifest.json` 的 `exclude` 字段中声明打包排除，并在仓库 `.gitignore` 中忽略该目录。分享插件源码时，你的 Cookie 信息不会泄露。如需分享，请确保移除该目录。
+**然而必须注意，你发送的任何内容实际上都经手了你的模型提供商与服务商，请自行评估风险**
 
 ## 可用工具
 
@@ -160,6 +200,11 @@ playwright install chromium
 
 ### 文件管理
 
+- **`browser_upload_file`** - 上传文件到指定文件输入框（绕过系统文件对话框）
+  - `selector`: 文件输入框的 CSS 选择器（如 `#upload-files`、`input[type=file]`）
+  - `file_path`: 要上传文件的**绝对路径**（默认允许任意目录；可通过 `upload_allow_any_path=false` 限定仅允许白名单目录内的文件，出于安全考虑会拒绝其他路径）
+  - 返回: 上传成功或失败的信息
+
 - **`browser_download`** - 下载文件（自动发送给用户）
   - `url`: 文件 URL
   - `filename`: 保存文件名（可选）
@@ -190,7 +235,7 @@ playwright install chromium
 - **`browser_mouse_move`** - 移动鼠标到指定坐标
   - `x`: X坐标
   - `y`: Y坐标
-  - `steps`: 移动步数（越大越平滑）
+  - `steps`: 步数（越大越平滑）
 
 - **`browser_mouse_click`** - 在指定坐标点击
   - `x`, `y`: 坐标（可选，不指定则在当前位置点击）
@@ -348,4 +393,4 @@ playwright install chromium
 
 ## 许可证
 
-MIT License
+AGPL-3.0 License

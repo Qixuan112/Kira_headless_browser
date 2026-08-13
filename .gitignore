@@ -1,0 +1,3 @@
+# Cookie 目录包含用户会话凭证，禁止提交到版本库
+# 已在 manifest.json 的 exclude 字段中声明打包排除
+data/files/cookie/
