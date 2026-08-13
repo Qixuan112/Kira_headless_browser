@@ -223,9 +223,10 @@ class HeadlessBrowserPlugin(BasePlugin):
         self.cookies_dir = cfg.get("cookies_dir", "data/files/cookie")
         # 上传限制：默认允许上传任意目录；关闭后仅允许 upload_allowed_dirs 中的目录
         self.upload_allow_any_path: bool = bool(cfg.get("upload_allow_any_path", True))
-        self.upload_allowed_dirs = [
-            d.strip() for d in str(cfg.get("upload_allowed_dirs", "data/files\ndata/temp")).splitlines() if d.strip()
-        ]
+        _raw_dirs = cfg.get("upload_allowed_dirs", ["data/files", "data/temp"])
+        if isinstance(_raw_dirs, str):
+            _raw_dirs = _raw_dirs.splitlines()
+        self.upload_allowed_dirs = [str(d).strip() for d in _raw_dirs if str(d).strip()]
         
         # 浏览器实例
         self._playwright = None
