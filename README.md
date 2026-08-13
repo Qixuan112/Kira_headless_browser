@@ -1,6 +1,6 @@
-# 无头浏览器插件 (Headless Browser Plugin)
+# 无头浏览器插件 (Headless Browser Plugin) 1.1.0
 
-让 KiraAI 能够控制无头浏览器进行网页浏览、截图、下载等操作。
+让 KiraAI 能够控制无头浏览器进行网页浏览、截图、下载、上传等操作，支持通过给AI发送cookie半持久化登录各种账号。
 
 ## 功能特性
 
@@ -8,9 +8,10 @@
 - 📸 **截图功能**: 截取页面或元素，自动发送给 AI 查看
 - 📁 **文件管理**: 下载文件、保存截图、发送文件给用户
 - 🔧 **JS执行**: 在页面中执行 JavaScript 代码
+- 🍪 **Cookie管理**: 自动加载 `data/files/cookie/` 目录下所有网站的 Cookie 文件，多站点独立存储，分享插件时安全隔离
 - ⚙️ **灵活配置**: 支持无头/可视模式、自定义视口、User-Agent 等
 
-## 安装依赖
+## 安装依赖（重要！第二行必须手动在cmd内输入，无法通过requirements.txt自动安装！）
 
 ```bash
 pip install playwright aiohttp
@@ -34,6 +35,7 @@ playwright install chromium
 | `vlm_model` | model_select | - | 选择用于描述截图的VLM模型（下拉框显示所有已配置模型） |
 | `vlm_describe_prompt` | string | - | 自定义VLM提示词（可选，未设置则使用默认模板） |
 | `vlm_timeout` | integer | `10` | VLM描述超时时间（秒） |
+| `cookies_dir` | string | `data/files/cookie` | Cookie文件存放目录，启动时自动加载该目录下所有 *.json 文件 |
 
 ### 截图发送模式
 
@@ -57,7 +59,7 @@ playwright install chromium
 截图后插件可以使用 VLM（视觉语言模型）自动分析截图内容，提取页面信息供后续 AI 调用工具使用。
 
 **重要说明：**
-由于技术限制，用于描述截图的 VLM 模型必须是 **LLM 类型**（不是图像类型）。即使模型支持视觉分析，也需要在 LLM 模型组中配置才能用于描述功能。
+基于KiraAI框架传统，用于描述截图的 VLM 模型必须是 **LLM 类型**（不是图像类型）。即使模型支持视觉分析，也需要在 LLM 模型组中配置才能用于描述功能。
 
 **配置步骤：**
 1. 在**提供商**设置中，将视觉模型（如 Qwen-VL）添加到 **大语言模型** 组（而不是图像组）
@@ -113,6 +115,42 @@ playwright install chromium
 
 **自定义提示词：**
 如需覆盖默认模板，在插件配置中填写 `vlm_describe_prompt`。自定义提示词将完全替代默认模板。
+
+### 🍪 Cookie 管理
+
+插件支持自动加载 **多个网站** 的 Cookie，方便 AI 以已登录状态操作各类网站。
+
+**存储方式：**
+- Cookie 文件统一存放在 `data/files/cookie/` 目录
+- 每个网站一个独立的 JSON 文件，如 `chatgpt.json`、`claude.json`、`gemini.json`
+- 插件启动或浏览器重启时，自动扫描并加载该目录下所有 `*.json` 文件
+
+**文件格式（标准 Chrome 导出格式）：**
+```json
+[
+  {
+    "name": "session-token",
+    "value": "xxx",
+    "domain": ".chatgpt.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": true,
+    "sameSite": "Lax",
+    "expirationDate": 11451418881
+  }
+]
+```
+支持嵌套格式（如 `{"cookies": [...]}`），插件会自动解包。
+
+**如何使用：**
+1. 从浏览器扩展（如 EditThisCookie、Get cookies.txt）导出对应网站的 Cookie
+2. 保存为 JSON 文件，放入 `data/files/cookie/` 目录；或通过各种形式完整发送给AI读取后让其自行处理（需要其具有读写相应路径文件的权限）
+3. 建议按站点名命名方便管理，如 `chatgpt.json`
+4. 重载插件或重启 KiraAI 即可自动加载
+
+**安全隔离：**
+`data/files/cookie/` 目录位于项目数据目录下，**不随插件文件打包**。分享插件源码时，你的 Cookie 信息不会泄露。如需分享，请确保移除该目录。
+**然而必须注意，你发送的任何内容实际上都经手了你的模型提供商与服务商，请自行评估风险**
 
 ## 可用工具
 
@@ -348,4 +386,4 @@ playwright install chromium
 
 ## 许可证
 
-MIT License
+AGPL-3.0 License
