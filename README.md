@@ -36,6 +36,8 @@ playwright install chromium
 | `vlm_describe_prompt` | string | - | 自定义VLM提示词（可选，未设置则使用默认模板） |
 | `vlm_timeout` | integer | `10` | VLM描述超时时间（秒） |
 | `cookies_dir` | string | `data/files/cookie` | Cookie文件存放目录，启动时自动加载该目录下所有 *.json 文件 |
+| `upload_allow_any_path` | boolean | `true` | 是否允许上传任意目录的文件（true=允许任何路径，false=仅允许白名单目录） |
+| `upload_allowed_dirs` | string | `data/files`<br>`data/temp` | 允许上传的目录白名单（每行一个，仅在 `upload_allow_any_path=false` 时生效） |
 
 ### 截图发送模式
 
@@ -200,7 +202,7 @@ playwright install chromium
 
 - **`browser_upload_file`** - 上传文件到指定文件输入框（绕过系统文件对话框）
   - `selector`: 文件输入框的 CSS 选择器（如 `#upload-files`、`input[type=file]`）
-  - `file_path`: 要上传的文件路径（**仅允许上传插件数据目录内的文件**，出于安全考虑会拒绝其他路径）
+  - `file_path`: 要上传文件的**绝对路径**（默认允许任意目录；可通过 `upload_allow_any_path=false` 限定仅允许白名单目录内的文件，出于安全考虑会拒绝其他路径）
   - 返回: 上传成功或失败的信息
 
 - **`browser_download`** - 下载文件（自动发送给用户）
