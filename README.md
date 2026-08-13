@@ -36,8 +36,8 @@ playwright install chromium
 | `vlm_describe_prompt` | string | - | 自定义VLM提示词（可选，未设置则使用默认模板） |
 | `vlm_timeout` | integer | `10` | VLM描述超时时间（秒） |
 | `cookies_dir` | string | `data/files/cookie` | Cookie文件存放目录，启动时自动加载该目录下所有 *.json 文件 |
-| `upload_allow_any_path` | boolean | `true` | 是否允许上传任意目录的文件（true=允许任何路径，false=仅允许白名单目录） |
-| `upload_allowed_dirs` | string | `data/files`<br>`data/temp` | 允许上传的目录白名单（每行一个，仅在 `upload_allow_any_path=false` 时生效） |
+| `upload_allow_any_path` | switch | `true` | 是否允许上传任意目录的文件（true=允许任何路径，false=仅允许白名单目录） |
+| `upload_allowed_dirs` | list | `["data/files", "data/temp"]` | 允许上传的目录白名单（每行一个，仅在 `upload_allow_any_path=false` 时生效） |
 
 ### 截图发送模式
 
