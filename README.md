@@ -182,8 +182,8 @@
 |---|---|---|
 | `cookies_dir` | `data/files/cookie` | 放 cookie JSON 的目录 |
 | `load_cookies_on_start` | 开 | 启动时自动把该目录下的 cookie 灌回去（见下） |
-| `screenshot_dir` | 空 = `data/temp` | 截图保存位置 |
-| `download_dir` | 插件数据目录/downloads | 下载保存位置 |
+| `screenshot_dir` | `<数据目录>/temp` | 截图保存位置（框架临时区，自动清理） |
+| `download_dir` | `<数据目录>/files` | 下载保存位置（和框架 `<file>` 标签同一目录） |
 | `screenshot_max_count` / `download_max_count` | 50 / 100 | 最多保留多少个 |
 | `screenshot_auto_clean` / `download_auto_clean` | 开 | 自动清理旧的 |
 | `download_max_bytes` | 2GB | 单个下载大小上限（下载是**流式落盘**，多大都不占内存） |
@@ -488,6 +488,57 @@ python -m playwright install chromium
 
 <details>
 <summary><b>2.1.x</b> — 49 个版本　·　最新的一系列：双后端重构、安全加固、以及大量审查修复</summary>
+
+### v2.1.57（2026-09-18）
+
+**目录语义对齐框架：`data/xxx` = KiraAI 数据目录下的 xxx。**
+
+#### 问题（两个，都是我把"想当然"当成了"约定"）
+
+**① 默认值放错了地方。** 我把下载默认放在 `<data>/plugin_data/<id>/downloads`
+—— 那是插件的**内部状态目录**，用户翻不到、模型也没法用 `data/...` 引用。
+后来又自作主张发明了一个 `<data>/downloads`，框架里根本没有这个约定。
+
+**② 用户填的 `data/xxx` 被按 CWD 解释。** 框架自己的规矩
+（`core/plugin/builtin_plugins/kira-ai/tags.py` 的 `<file>` 标签）是：
+
+```python
+if os.path.exists(value):        # ① 绝对路径 → 原样
+elif value.startswith("data/"):  # ② → <get_data_path()>/<rel>
+else: return []                  # ③ 其他相对路径 → 丢弃
+```
+
+也就是说 **`data/bs` 的意思是 `<数据目录>/bs`，不是 `<CWD>/data/bs`**。
+按 CWD 解释时，只有"进程 CWD 恰好是 KiraAI 根目录、且数据目录就是
+`<root>/data`"才对得上；换个启动目录、或 `--data-dir` 换过，就静默跑偏。
+
+#### 现在
+
+所有目录配置都过同一个解析器，**语义与框架 `<file>` 一致**：
+
+| 你填什么 | 实际含义 |
+|---|---|
+| 留空 | 插件默认值（下载 `<数据目录>/files`、截图 `<数据目录>/temp`） |
+| `data/xxx` | `<数据目录>/xxx` |
+| `xxx`（裸名） | `<数据目录>/xxx`（框架是丢弃，配置框里丢掉更糟，统一同基准） |
+| `/绝对/路径` | 原样 |
+
+默认值也改成**跟随框架自己的目录约定**：
+
+- 截图 → `<数据目录>/temp` —— 框架的 `AsyncTempMonitor` 本来就在清它
+- 下载 → `<数据目录>/files` —— 框架 `<file>` 标签列给模型的"可发送文件"区
+- Cookie → `<数据目录>/files/cookie`（`_clean_downloads` 用 `isfile()` 过滤，不碰子目录）
+
+> 自动清理是**特性**：目录填到哪儿，就在哪儿享受清理。
+
+#### 新增检查 `paths_default`（10 条）
+
+C1 默认值不含相对字面量 / C3-C4 行为验证（默认情形与旧写法一致、
+换 data-dir 时跟着框架走）/ C5 真构造对象看三个目录是否绝对 /
+C6 `data/xxx` 按数据目录解释 / C7 留空回落到框架目录 /
+C8-C9 自动清理不会被代码偷偷关掉。
+
+套件 **394/394 全绿**。
 
 ### v2.1.56（2026-09-18）
 

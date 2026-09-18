@@ -24,6 +24,7 @@ from . import (
     lost_features,
     timeout_semantics,
     execjs_gates,
+    paths_default,
 )
 
 #: 检查**模块**列表（按顺序执行）。
@@ -32,6 +33,7 @@ from . import (
 #    写成元组会在跑的时候抛 AttributeError。
 #    要新增检查：import 进来，加到这个列表里即可。
 ALL_CHECKS = [
+    paths_default,       # 默认目录基准（截图/下载/cookie 必须绝对 + 跟框架走）
     static_audit,        # 静态一致性 / README / 历史回归 / 运行时坑 / 打包
     tool_merge,          # 工具合并零丢失
     wiring,              # 接线完整性（配置接通 / 数据透传）

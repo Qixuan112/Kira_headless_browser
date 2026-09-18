@@ -89,6 +89,7 @@ regression/
 │   ├── lost_features.py    重写时丢掉的能力（cookie 自动加载 / 下载浏览器 / VLM 自查）
 │   ├── timeout_semantics.py 「结果不确定」链路（超时不得触发换后端重试）
 │   └── execjs_gates.py     扩展执行 JS 的两道关口（USER_SCRIPT world CSP / 端口值域）
+│   └── paths_default.py    默认目录基准（截图 temp / 下载 files；data/xxx 按数据目录解释）
 ├── stubs/                  让插件能被 import 的最小替身（不需要真的 KiraAI）
 │   ├── core/               框架接口的最小实现
 │   └── playwright/         **语义忠实的**假 Playwright（见下）
