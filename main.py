@@ -158,7 +158,15 @@ class BrowserPlugin(BasePlugin):
         #    想收紧的人在配置里关掉，那时本机与内网一律拒绝。
         self.local_access = _b(cfg.get("local_access", True))
         self.require_confirm = _b(cfg.get("require_confirm", False))
-        self.inject_page_state = _b(cfg.get("inject_page_state", True))
+        # ⚠️ 默认**关**。理由（按分量）：
+        #    ① 隐私：开着的话，**每一轮请求**都会把用户正在浏览的标题+网址
+        #       发给模型服务商 —— 哪怕这轮聊的根本不是浏览器的事。
+        #       工具方式是**按需**取，取的动作还留在对话记录里。
+        #    ② 冗余：模型真要用浏览器时，工具返回里本来就有标题/网址/标签数。
+        #    ③ 噪音：每轮都挂着"可读可写（无白名单限制）"这类提示。
+        #    ④ token：约 60~120 token/轮，每轮都算。
+        #    附带：开着时 _collect_state() 每 120 秒会去戳一次用户的浏览器。
+        self.inject_page_state = _b(cfg.get("inject_page_state", False))
         self.panel_auth_required = _b(cfg.get("panel_auth_required", True))
         self.max_content_chars = max(500, int(cfg.get("max_content_chars", 8000) or 8000))
         # 上传/发送文件的**路径白名单**。
@@ -951,7 +959,13 @@ class BrowserPlugin(BasePlugin):
             path = os.path.join(self._headless.screenshot_dir,
                                 self._headless.new_filename(prefix))
         else:
-            path = os.path.join("data/temp", f"{prefix}_{int(time.time())}.png")
+            # ⚠️ 同样不能写相对路径（`data/temp`）—— CWD 一变就落到别处。
+            #    这里没有 headless 后端可问，就用框架数据目录推。
+            from backends.headless_backend import _framework_data_path
+            _base = _framework_data_path(Path(self.ctx.get_plugin_data_dir()))
+            _d = _base / "temp"
+            os.makedirs(_d, exist_ok=True)
+            path = os.path.join(str(_d), f"{prefix}_{int(time.time())}.png")
         r = await self._call("screenshot", path=path, full_page=full_page,
                              selector=selector or None)
 

@@ -161,7 +161,7 @@
 |---|---|---|
 | `content_page_size` | 8000 | `browser_page` 单次返回多少字符。**不是上限**，可以接着读 |
 | `max_content_chars` | 8000 | 单次返回正文的字符上限 |
-| `inject_page_state` | 开 | 把当前浏览状态注入提示词，AI 更容易知道你在看哪一页 |
+| `inject_page_state` | 关 | 把当前浏览状态注入提示词，AI 更容易知道你在看哪一页 |
 | `panel_auth_required` | 开 | 配置面板需要登录 |
 
 ### 无头浏览器细节
@@ -182,8 +182,8 @@
 |---|---|---|
 | `cookies_dir` | `data/files/cookie` | 放 cookie JSON 的目录 |
 | `load_cookies_on_start` | 开 | 启动时自动把该目录下的 cookie 灌回去（见下） |
-| `screenshot_dir` | 空 = `data/temp` | 截图保存位置 |
-| `download_dir` | 插件数据目录/downloads | 下载保存位置 |
+| `screenshot_dir` | `<数据目录>/temp` | 截图保存位置（框架临时区，自动清理） |
+| `download_dir` | `<数据目录>/files` | 下载保存位置（和框架 `<file>` 标签同一目录） |
 | `screenshot_max_count` / `download_max_count` | 50 / 100 | 最多保留多少个 |
 | `screenshot_auto_clean` / `download_auto_clean` | 开 | 自动清理旧的 |
 | `download_max_bytes` | 2GB | 单个下载大小上限（下载是**流式落盘**，多大都不占内存） |
@@ -488,6 +488,77 @@ python -m playwright install chromium
 
 <details>
 <summary><b>2.1.x</b> — 49 个版本　·　最新的一系列：双后端重构、安全加固、以及大量审查修复</summary>
+
+### v2.1.58（2026-09-18）
+
+**`inject_page_state` 默认改为关（隐私）。**
+
+原来默认开着：每轮请求都把「当前后端 / 你正在浏览的标题与网址 / 标签页数」
+附进上下文。但它是**用户没主动触发就默认外发** ——
+
+| | 开着 | 关掉（默认） |
+|---|---|---|
+| 隐私 | 你在看网银/体检报告/私信，**每一轮**请求都把标题+网址发给服务商 | 模型只在真正调用浏览器工具时才拿到，取的动作还留在对话记录里 |
+| 冗余 | —— | 模型一旦用工具，返回里本来就有标题/网址/标签数 |
+| 噪音 | 每轮都挂着"可读可写（无白名单限制）" | 只在该聊浏览器时出现 |
+| token | 约 60~120 token/轮 | 0 |
+| 附带 | 每 120 秒去戳一次你的浏览器（唤醒扩展 service worker） | 不戳 |
+
+要"模型主动察觉我在看什么"的人，去设置里自己打开 —— 说明里写清了开着的代价。
+
+新增检查 C9a/C9b：schema 与代码的默认值都必须是关，且**不能各说各话**。
+反向验证：改回 `true` → C9a 立刻报红。
+
+### v2.1.57（2026-09-18）
+
+**目录语义对齐框架：`data/xxx` = KiraAI 数据目录下的 xxx。**
+
+#### 问题（两个，都是我把"想当然"当成了"约定"）
+
+**① 默认值放错了地方。** 我把下载默认放在 `<data>/plugin_data/<id>/downloads`
+—— 那是插件的**内部状态目录**，用户翻不到、模型也没法用 `data/...` 引用。
+后来又自作主张发明了一个 `<data>/downloads`，框架里根本没有这个约定。
+
+**② 用户填的 `data/xxx` 被按 CWD 解释。** 框架自己的规矩
+（`core/plugin/builtin_plugins/kira-ai/tags.py` 的 `<file>` 标签）是：
+
+```python
+if os.path.exists(value):        # ① 绝对路径 → 原样
+elif value.startswith("data/"):  # ② → <get_data_path()>/<rel>
+else: return []                  # ③ 其他相对路径 → 丢弃
+```
+
+也就是说 **`data/bs` 的意思是 `<数据目录>/bs`，不是 `<CWD>/data/bs`**。
+按 CWD 解释时，只有"进程 CWD 恰好是 KiraAI 根目录、且数据目录就是
+`<root>/data`"才对得上；换个启动目录、或 `--data-dir` 换过，就静默跑偏。
+
+#### 现在
+
+所有目录配置都过同一个解析器，**语义与框架 `<file>` 一致**：
+
+| 你填什么 | 实际含义 |
+|---|---|
+| 留空 | 插件默认值（下载 `<数据目录>/files`、截图 `<数据目录>/temp`） |
+| `data/xxx` | `<数据目录>/xxx` |
+| `xxx`（裸名） | `<数据目录>/xxx`（框架是丢弃，配置框里丢掉更糟，统一同基准） |
+| `/绝对/路径` | 原样 |
+
+默认值也改成**跟随框架自己的目录约定**：
+
+- 截图 → `<数据目录>/temp` —— 框架的 `AsyncTempMonitor` 本来就在清它
+- 下载 → `<数据目录>/files` —— 框架 `<file>` 标签列给模型的"可发送文件"区
+- Cookie → `<数据目录>/files/cookie`（`_clean_downloads` 用 `isfile()` 过滤，不碰子目录）
+
+> 自动清理是**特性**：目录填到哪儿，就在哪儿享受清理。
+
+#### 新增检查 `paths_default`（10 条）
+
+C1 默认值不含相对字面量 / C3-C4 行为验证（默认情形与旧写法一致、
+换 data-dir 时跟着框架走）/ C5 真构造对象看三个目录是否绝对 /
+C6 `data/xxx` 按数据目录解释 / C7 留空回落到框架目录 /
+C8-C9 自动清理不会被代码偷偷关掉。
+
+套件 **394/394 全绿**。
 
 ### v2.1.56（2026-09-18）
 

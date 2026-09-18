@@ -650,3 +650,40 @@ def run(r) -> None:
          "local_access" in _doc and "拦不住" in _doc
          and "就够了" not in _doc,
          "黑名单拦不住等价写法；文档必须点明用 local_access=False")
+
+    # ── C9 注入浏览状态默认必须是**关**（隐私）────────────────────────
+    #    ⚠️ 开着的话，**每一轮**请求都会把用户当前页面的标题+网址发给模型
+    #       服务商 —— 哪怕这轮聊的根本不是浏览器的事。这不是"多点上下文"，
+    #       而是"用户没主动触发就默认外发"。所以默认关；想要的人自己开。
+    #       顺带钉住：schema.json 的默认值和代码里的回落值**不能各说各话**。
+    import json as _json
+
+    def _find(o, key):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if k == key:
+                    return v
+                got = _find(v, key)
+                if got is not None:
+                    return got
+        elif isinstance(o, list):
+            for v in o:
+                got = _find(v, key)
+                if got is not None:
+                    return got
+        return None
+
+    try:
+        _entry = _find(_json.loads(src_safe("schema.json")), "inject_page_state") or {}
+    except Exception as _e:
+        _entry = {}
+        r.ok("C9a schema.json 可解析", False, f"{type(_e).__name__}: {_e}")
+    else:
+        r.ok("C9a schema.json 里 inject_page_state 默认为关（隐私：不主动外发网址）",
+             _entry.get("default") is False,
+             f"实际 default={_entry.get('default')!r} —— 开着=每轮都把当前网址发给服务商")
+
+    _m = re.search(r'cfg\.get\(\s*["\']inject_page_state["\']\s*,\s*(True|False)', src_safe("main.py"))
+    r.ok("C9b 代码里的回落值也是关，且与 schema 一致",
+         bool(_m) and _m.group(1) == "False",
+         f"实际={_m.group(1) if _m else '没找到 cfg.get(...)'}")
