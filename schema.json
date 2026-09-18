@@ -314,9 +314,10 @@
     "default": "",
     "locales": {
       "zh": {
-        "name": "截图目录（留空用 data/temp）"
+        "name": "截图目录"
       }
-    }
+    },
+    "hint": "留空用插件默认值。填 data/xxx 表示 **KiraAI 数据目录下的 xxx**（和框架 `<file>` 标签同一规矩，不是当前工作目录下的 data/）；也可直接填绝对路径。默认：`<数据目录>/temp`（框架的临时区，本身会被自动清理）"
   },
   "download_dir": {
     "name": "Download Dir",
@@ -326,7 +327,8 @@
       "zh": {
         "name": "下载目录"
       }
-    }
+    },
+    "hint": "留空用插件默认值。填 data/xxx 表示 **KiraAI 数据目录下的 xxx**（和框架 `<file>` 标签同一规矩，不是当前工作目录下的 data/）；也可直接填绝对路径。默认：`<数据目录>/files`（框架 `<file>` 标签的文件区）。自动清理作用在此目录"
   },
   "screenshot_max_count": {
     "name": "Max Screenshots",
@@ -469,7 +471,7 @@
     "name": "Cookie Directory",
     "type": "string",
     "default": "data/files/cookie",
-    "hint": "Where per-site cookie JSON files live (one file per site, e.g. chatgpt.json). Loaded automatically on startup when the switch above is on.",
+    "hint": "留空用插件默认值。填 data/xxx 表示 **KiraAI 数据目录下的 xxx**（和框架 `<file>` 标签同一规矩，不是当前工作目录下的 data/）；也可直接填绝对路径。默认：`<数据目录>/files/cookie`",
     "locales": {
       "zh": {
         "name": "Cookie 目录",

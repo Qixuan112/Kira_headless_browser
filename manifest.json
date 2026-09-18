@@ -1,7 +1,7 @@
 {
   "display_name": "All-in-One Browser",
   "plugin_id": "headless_browser",
-  "version": "2.1.56",
+  "version": "2.1.57",
   "icon": "icon.png",
   "author": "nyx+znq19+萧洋",
   "description": "Lets KiraAI genuinely use a browser. Does almost everything you can do in a browser: open pages, read content, click, type, upload and download files, run JavaScript, carry logins across, and even drive the keyboard and mouse. With the bundled extension it works inside the browser you already have open (your logins, no conflict); without it, it spins up its own headless browser - both paths do exactly the same things.",

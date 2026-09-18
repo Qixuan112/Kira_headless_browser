@@ -26,6 +26,55 @@ from .router import Backend
 logger = get_logger("browser_merged", "cyan")
 
 
+def _resolve_user_dir(value, default: str, plugin_data_dir: Path) -> str:
+    """把用户填的目录解析成**绝对路径**，语义与 KiraAI 的 `<file>` 标签一致。
+
+    ⚠️ 这个函数存在的理由：用户在配置里填 `data/bs` 时，
+       **它代表的不是 `<CWD>/data/bs`，而是 `<框架数据目录>/bs`**。
+
+       框架自己的规矩（`core/plugin/builtin_plugins/kira-ai/tags.py`）：
+         · 绝对路径                     → 原样使用
+         · `data/<rel>`                 → `<get_data_path()>/<rel>`
+         · 其他相对路径（含裸名）       → **直接丢弃**（return []）
+
+       插件如果按 CWD 解释，就会出现"用户填了 `data/bs`，文件却落到
+       `<CWD>/data/bs`"—— 只有当 CWD 恰好是 KiraAI 根目录、且数据目录
+       就是 `<root>/data` 时才对得上。换个启动目录、或 `--data-dir` 换过，
+       就静默跑到别处去了。
+
+       裸相对名（比如 `bs`）框架是丢弃的，但配置框里静默丢弃更糟 ——
+       这里统一按**同一个基准**（框架数据目录）解释，也就是 `bs` == `data/bs`。
+    """
+    raw = (value or "").strip().replace("\\", "/")
+    if not raw:
+        return default
+    if raw == "data":
+        return str(_framework_data_path(plugin_data_dir))
+    if raw.startswith("data/"):
+        return str(_framework_data_path(plugin_data_dir) / raw[5:])
+    p = Path(raw)
+    if p.is_absolute():
+        return str(p)
+    return str(_framework_data_path(plugin_data_dir) / raw)
+
+
+def _framework_data_path(plugin_data_dir: Path) -> Path:
+    """框架的数据目录（**绝对路径**）。
+
+    ⚠️ 不能拿相对字符串当默认目录。`data/temp` 这种写法只有在
+    "CWD 恰好是 KiraAI 根目录、且数据目录就是 `<root>/data`" 时才成立；
+    用户用 `--data-dir` 换过目录、或从别的 CWD 启动，就会静默落到别处。
+
+    取不到框架时（单测/桩环境）退回插件数据目录的上两级：
+    插件数据目录是 `<data>/plugin_data/<plugin_id>`，往上两级正是 `<data>`。
+    """
+    try:
+        from core.utils.path_utils import get_data_path
+        return Path(get_data_path())
+    except Exception:
+        return Path(plugin_data_dir).parent.parent
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 启动参数 —— CPU 优化的核心
 # ══════════════════════════════════════════════════════════════════════
@@ -135,12 +184,28 @@ class HeadlessBackend(Backend):
         self.profile_mode = (cfg.get("headless_profile_mode", "inherit") or "inherit").lower()
         self.custom_user_data_dir = (cfg.get("custom_user_data_dir") or "").strip()
 
-        self.screenshot_dir = cfg.get("screenshot_dir") or str(Path("data/temp"))
-        self.download_dir = cfg.get("download_dir") or str(Path(data_dir) / "downloads")
+        # ⚠️ 默认目录必须是**绝对路径**，且以框架的数据目录为基准。
+        #    原来写的是相对字符串（`data/temp`、`data/files/cookie`）——
+        #    只有当"进程 CWD 恰好是 KiraAI 根目录、且数据目录就是 <root>/data"
+        #    时才对；用户自定义了数据目录、或从别处启动 KiraAI，
+        #    截图/Cookie 就会**落到别的地方**（而且不报错，很难发现）。
+        #    框架的数据目录用 get_data_path() 取（和 tokens.py 同一个来源）。
+        _fw_data = _framework_data_path(data_dir)
+        # ⚠️ 用户手填的值也要走同一个解析器 —— 只把**默认值**改成绝对路径
+        #    是不够的：用户填 `data/bs` 时，按 CWD 解释仍然会跑偏。
+        self.screenshot_dir = _resolve_user_dir(
+            cfg.get("screenshot_dir"), str(_fw_data / "temp"), data_dir)
+        #    默认跟随**框架自己的目录约定**（不是我自己发明的新目录）：
+        #      · 截图  → `<data>/temp`  —— 框架的 AsyncTempMonitor 本来就在清它
+        #      · 下载  → `<data>/files` —— 框架 `<file>` 标签列给模型的"可发送文件"区
+        #    用户想在哪儿享受自动清理，把目录填到哪儿就行（清理是特性）。
+        self.download_dir = _resolve_user_dir(
+            cfg.get("download_dir"), str(_fw_data / "files"), data_dir)
         # ⚠️ cookie 自动加载目录（原版能力，重写时丢过一次）。
         #    启动时把这里的 *.json 全部灌进浏览器 —— 用户的登录态因此
         #    在重装/换机器/临时 profile 之后还能找回来。
-        self.cookies_dir = cfg.get("cookies_dir") or str(Path("data/files/cookie"))
+        self.cookies_dir = _resolve_user_dir(
+            cfg.get("cookies_dir"), str(_fw_data / "files" / "cookie"), data_dir)
         self.load_cookies_on_start = _as_bool(cfg.get("load_cookies_on_start", True))
         #: 允许"所有浏览器来源都失败"时自动下载内置 Chromium（README 承诺的行为）。
         #  下载很慢，所以给一个宽松但有限的超时；可以关掉。

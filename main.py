@@ -951,7 +951,13 @@ class BrowserPlugin(BasePlugin):
             path = os.path.join(self._headless.screenshot_dir,
                                 self._headless.new_filename(prefix))
         else:
-            path = os.path.join("data/temp", f"{prefix}_{int(time.time())}.png")
+            # ⚠️ 同样不能写相对路径（`data/temp`）—— CWD 一变就落到别处。
+            #    这里没有 headless 后端可问，就用框架数据目录推。
+            from backends.headless_backend import _framework_data_path
+            _base = _framework_data_path(Path(self.ctx.get_plugin_data_dir()))
+            _d = _base / "temp"
+            os.makedirs(_d, exist_ok=True)
+            path = os.path.join(str(_d), f"{prefix}_{int(time.time())}.png")
         r = await self._call("screenshot", path=path, full_page=full_page,
                              selector=selector or None)
 
