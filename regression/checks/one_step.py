@@ -303,3 +303,34 @@ def run(r) -> None:
                 _bad14.append(f"{_f} 含 {_mark!r}")
     r.ok("S14 前端资源里没有混进工具输出（offload 提示等）", not _bad14,
          f"问题={_bad14 or '无'} —— 混进去会让整个样式/脚本失效")
+
+    # ── S15 前端 CSS 必须结构完整（注释/括号配平）──────────────────────
+    #    ⚠️ 真事故：我早先"清理" style.css 时，把某段注释的**开头和它所属的
+    #       规则一起删了**，只剩尾巴浮在文件里 ✗ → 解析器从那里开始错乱 →
+    #       **后面的动画规则全部失效** → 用户看到"动画完全不动"。
+    #       这类损坏肉眼很难发现（文件看着挺正常），但后果是整段失效。
+    _css = src_safe("web/style.css")
+    _bad15 = []
+    if _css.count("{") != _css.count("}"):
+        _bad15.append(f"花括号不配平（{{={_css.count('{')} }}={_css.count('}')}）")
+    _i, _depth, _opens, _orphan = 0, 0, 0, []
+    while _i < len(_css) - 1:
+        if _css[_i:_i + 2] == "/*":
+            if _depth == 0:
+                _opens += 1
+            _depth += 1
+            _i += 2
+            continue
+        if _css[_i:_i + 2] == "*/":
+            if _depth == 0:
+                _orphan.append(_css[:_i].count("\n") + 1)
+            _depth = max(0, _depth - 1)
+            _i += 2
+            continue
+        _i += 1
+    if _depth:
+        _bad15.append("有注释没闭合（会吞掉它之后的全部规则）")
+    if _orphan:
+        _bad15.append(f"有游离的注释尾巴（第 {_orphan} 行）")
+    r.ok("S15 前端 CSS 结构完整（注释闭合 / 括号配平）", not _bad15,
+         f"问题={_bad15 or '无'} —— 这类损坏会让后面的样式整段失效")

@@ -49,10 +49,21 @@ function toast(msg) {
  */
 
 async function api(path, opts) {
-  const res = await fetch(API + path, Object.assign({
+  const o = Object.assign({
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",          // 带上 kira_token cookie
-  }, opts || {}));
+  }, opts || {});
+  // ⚠️⚠️ **非 GET 必须带 body，哪怕是空的 `{}`** ——
+  //    框架官方的 Bridge SDK（webui/frontend/public/plugin-bridge.js）就是
+  //    `body: JSON.stringify(body || {})`，永远给一个。
+  //    我们这边原来 POST 一个字节都不发 ✗：带着
+  //    `Content-Type: application/json` 却没有 body，FastAPI 解析 JSON 失败
+  //    → **422** → 界面就显示"读取失败" / "保存失败"。
+  //    （旧版面板也不带 body，但在**旧框架**上没这么严；KiraAI 现在 2.34.x
+  //     收紧了这一条 —— 这就是"旧版行、重写后不行"的真正原因 ✗）
+  const m = String(o.method || "GET").toUpperCase();
+  if (m !== "GET" && m !== "HEAD" && o.body == null) o.body = "{}";
+  const res = await fetch(API + path, o);
   if (!res.ok) throw new Error("HTTP " + res.status);
   return res.json();
 }

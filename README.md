@@ -501,6 +501,55 @@ python -m playwright install chromium
 <details>
 <summary><b>2.1.x</b> — 49 个版本　·　最新的一系列：双后端重构、安全加固、以及大量审查修复</summary>
 
+### v2.1.78（2026-09-19）
+
+**三个问题的真根因都找到了 —— 其中两个是"框架收紧了、我还在用旧写法"。**
+
+#### 🔴 令牌 + 保存配置：**POST 必须带 body**
+
+框架官方的 Bridge SDK（`webui/frontend/public/plugin-bridge.js`）里写着：
+
+```js
+function apiPost(endpoint, body) {
+  return fetch(url, { method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {})     // ← 永远给一个，哪怕是空对象
+  })
+}
+```
+
+**我的 POST 一个字节都不发** ✗ —— 带着 `Content-Type: application/json`
+却没有 body，FastAPI 解析 JSON 失败 → **422** ✗ → 界面显示"读取失败" ✓
+
+旧版面板也不带 body，但它在**旧框架**上没问题 —— 你现在是 KiraAI 2.34.x，
+**这一条收紧了** ✓ 这就是"旧版行、重写后不行"的真正答案。
+
+#### 🔴 保存配置报"未知配置项：['values']"
+
+`api_set_config(self, values: dict = None)` ✗ —— FastAPI 把**整个 body**
+当成了 `values` → 面板发 `{"values": {...}}` 就变成
+`values = {"values": {...}}` → 报错 ✓
+
+→ 改成 `await request.json()` 读 body（照 Z 插件的写法），
+`{"values": {...}}` 和直接摊平的 `{...}` **两种形状都认** ✓
+
+#### 🔴 载入动画"不会动、也不会消失"
+
+我早先"清理" `style.css` 时，把某段注释的**开头和它所属的规则一起删了** ✗
+—— 只剩一截尾巴浮在文件里 → **解析器从那里开始错乱，后面的动画规则全部失效**
+→ 表现就是完全不动 ✓
+
+另外 `@media (prefers-reduced-motion: reduce)` 里那条
+`* { animation: none !important }` 会**连收尾动画一起杀掉** ✗ →
+那块盖住页面的层**永远不会消失**。现在对这类用户**直接不显示这一层** ✓
+
+#### 新增 S15
+
+前端 CSS 必须**结构完整**（注释闭合 / 括号配平）—— 这类损坏肉眼看着正常，
+但会让后面**整段样式失效**，正是这次"动画不动"的原因。
+
+套件 **446/446 全绿**。
+
 ### v2.1.77（2026-09-19）
 
 **照着 Z 插件（已跑通的那套）重做载入动画与模型下拉。**

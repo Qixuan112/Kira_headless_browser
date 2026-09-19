@@ -1925,12 +1925,24 @@ class BrowserPlugin(BasePlugin):
                 "overrides": sorted((self._cfg_overrides or {}).keys())}
 
     @register.api("POST", "/config", auth=True)
-    async def api_set_config(self, values: dict = None):
+    async def api_set_config(self, request: Request):
         """侧边栏写入：**存下来 + 立刻生效**（不用重启）✓
 
         ⚠️ 只接受 schema 里声明过的键 —— 免得前端拼错一个字就悄悄写入
            一个没人读的字段（那种 bug 最难查）。
         """
+        # ⚠️ 用 `await request.json()` 读 body（照 Z 插件的写法）——
+        #    之前写成 `values: dict = None`，FastAPI 会把**整个 body** 当成
+        #    `values` ✗ → 面板发 `{"values": {...}}` 就变成
+        #    `values = {"values": {...}}` → 报"未知配置项：['values']" ✓
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        # 两种形状都认：`{"values": {...}}` 和直接摊平的 `{...}`
+        values = body.get("values") if isinstance(body.get("values"), dict) else body
         values = values or {}
         known = set(self._schema_fields().keys())
         bad = [k for k in values if k not in known]

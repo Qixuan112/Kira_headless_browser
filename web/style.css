@@ -196,6 +196,12 @@ body::after{
 }
 @media (prefers-reduced-motion:reduce){
   *{transition:none!important;animation:none!important}
+  /* ⚠️ 载入动画是**例外**：上面那条 `*{animation:none!important}` 会连它的
+     收尾动画（boot-out）一起杀掉 ✗ → 那块盖住整个页面的层**永远不会消失**
+     （用户看到的就是"不会动、也不会自动消失"）。
+     对"不想要动效"的用户，最干净的做法是**根本不显示这一层** ——
+     不动，而且绝不会挡住界面。 */
+  .boot{display:none!important}
 }
 
 /* ── 令牌显示 ─────────────────────────────────────────────────────
@@ -212,17 +218,12 @@ body::after{
 .eye:hover { color: var(--teal); border-color: color-mix(in srgb, var(--teal) 40%, transparent); background: rgba(42,167,160,.06); }
 .eye:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 
-   用插件图标本身当主角：图标从"墨迹未干"到清晰，两道弧线一青一琥珀扫过，
-   几颗星点依次亮起（呼应图标上那些星星），最后整块像被笔刷斜着抹掉。
-   全程纯 CSS，不依赖任何库；prefers-reduced-motion 下直接不显示。 */
-   （实测截图确认过）。改用 SVG 数据 URI：真正的四角星，在哪都稳。 */
-
-/* 斜着抹掉 —— 像擦掉一块墨迹 */
-@media (prefers-reduced-motion: reduce) { .boot { display: none; } }
-
 /* ══ 载入动画（覆盖层本体在 index.html 的 head 内联里，这里只放"会动"的部分）
    ⚠️ 视觉上**故意跟 Z 插件不一样**：它是图标 3D 翻转；
-      我们走"墨迹化开 → 星点依次亮 → 笔刷斜着抹掉"。 ══════════════════ */
+      我们走"墨迹化开 → 星点依次亮 → 笔刷斜着抹掉"。
+   ⚠️ 上面原本有一段**断掉的注释**（我早先清理时把注释的开头和它所属的规则一起删了，
+      只剩尾巴浮在这儿 ✗）—— 那会让解析器从这里开始错乱，**后面的规则
+      全部失效**，表现就是"动画完全不动"。已修好，别再删注释头。 ════════ */
 .boot.skip { animation: boot-out .26s cubic-bezier(.7,0,.2,1) forwards !important; }
 
 /* 两道弧线：一青一琥珀，从两个方向扫出来 */
