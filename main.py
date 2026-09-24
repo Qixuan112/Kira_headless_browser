@@ -140,6 +140,38 @@ class BrowserPlugin(BasePlugin):
     #  配置
     # ══════════════════════════════════════════════════════════════════
 
+    def _resolve_data_dir(self, value) -> str:
+        """把白名单里的一项目录解析成**绝对路径**，语义与插件落盘一致。
+
+        ⚠️ 为什么必须有这一步：KiraAI 里 `data/files` 指的是
+           **`<框架数据目录>/files`**（见 `backends/headless_backend.py` 的
+           `_resolve_user_dir`，框架自己的 `<file>` 标签也是这套规矩）——
+           只有当 CWD 恰好是 KiraAI 根目录、且数据目录就是 `<root>/data`
+           时，它才等于 `<CWD>/data/files`。
+
+        白名单要是按 CWD 解释，就会**静默失效**（两处口径对不上）：
+
+        * 用户配了 `data/temp` 当本机文件白名单，而截图其实落在
+          `<框架数据目录>/temp` ⇒ **自己刚截的图自己打不开**；
+        * 反过来，CWD 下恰好存在同名目录时，白名单会意外放行它 ——
+          一个安全开关名不副实。
+
+        取不到框架（单测/桩环境）时退回插件数据目录的上两级，与
+        `_framework_data_path` 的兜底一致。
+        """
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        try:
+            from .backends.headless_backend import _resolve_user_dir
+            base = Path(self.ctx.get_plugin_data_dir())
+            return _resolve_user_dir(raw, raw, base)
+        except Exception as e:                       # noqa: BLE001
+            # ⚠️ 这里**不能**静默返回原字符串 —— 那等于悄悄退回"按 CWD 解释"
+            #    这条已知会失效的路径。退回绝对化至少让行为可预测，并留下日志。
+            logger.warning(f"目录「{raw}」无法按框架语义解析（{e}），按绝对路径处理")
+            return os.path.abspath(raw)
+
     def _apply_config(self, cfg: dict) -> None:
         """把配置摊平到实例属性。initialize 会重入，必须幂等。
 
@@ -216,6 +248,35 @@ class BrowserPlugin(BasePlugin):
         #    localhost:3000 这类开发服务器和 KiraAI 自己的面板都是正常工作目标。
         #    想收紧的人在配置里关掉，那时本机与内网一律拒绝。
         self.local_access = _b(cfg.get("local_access", True))
+        # 本机**文件**（file://）单独一条开关。
+        # ⚠️ 默认开，理由与 local_access 完全一致：bot 看不到本地文件，
+        #    "帮我看看这张图 / 这份 PDF / 这个视频"就全不可用 ——
+        #    而这正是浏览器最自然的用法之一。
+        #    历史上 file 被硬编码进 BLOCKED_SCHEMES（理由写着"扩展没权限"），
+        #    那句话只对了一半：扩展在用户打开「允许访问文件网址」后就能读，
+        #    无头浏览器更是从来没有这条限制 ⇒ 那一条硬编码把两个后端同时钉死。
+        self.local_file_access = _b(cfg.get("local_file_access", True))
+        # 本地文件路径白名单（与 upload_allow_any_path 同一套语义）
+        self.file_allow_any_path = _b(cfg.get("file_allow_any_path", True))
+        self.file_allowed_dirs = _as_list(
+            cfg.get("file_allowed_dirs")
+            or list(security.DEFAULT_FILE_DIRS))
+        # ⚠️ 白名单里的相对目录必须按**框架语义**展开成绝对路径。
+        #    `data/files` 在 KiraAI 里指的是 `<框架数据目录>/files`
+        #    （见 `_resolve_user_dir`），**不是** `<CWD>/data/files`。
+        #    不展开的话，这两组开关会**静默失效**：
+        #      · 关掉 `file_allow_any_path` 后，用户填的 `data/temp` 被按 CWD
+        #        解释，而插件产出的截图/下载其实在框架数据目录里 ⇒
+        #        用户看着自己配的白名单，**自己刚下载的文件却打不开**；
+        #      · 更糟的是反向：CWD 下恰好存在 `data/files` 时，
+        #        白名单会意外放行那个目录 —— 安全开关名不副实。
+        #    与 `upload_allowed_dirs` 用同一套语义，两处口径必须一致。
+        # ⚠️ 必须**丢掉解析后为空**的条目。
+        #    空串经 realpath 之后会变成 **CWD**，于是白名单会意外放行
+        #    启动目录下的一切 —— 一个空配置项把安全开关打开，很难发现。
+        self.file_allowed_dirs = [
+            d for d in (self._resolve_data_dir(x)
+                        for x in self.file_allowed_dirs) if d]
         self.require_confirm = _b(cfg.get("require_confirm", False))
         # ⚠️ 默认**关**。理由（按分量）：
         #    ① 隐私：开着的话，**每一轮请求**都会把用户正在浏览的标题+网址
@@ -239,7 +300,17 @@ class BrowserPlugin(BasePlugin):
         _dirs = cfg.get("upload_allowed_dirs") or ["data/files", "data/temp"]
         if isinstance(_dirs, str):
             _dirs = _dirs.splitlines()
-        self.upload_allowed_dirs = [str(d).strip() for d in _dirs if str(d).strip()]
+        # ⚠️ 同样按框架语义展开（见下面 _resolve_data_dir 的说明）——
+        #    原来这里只是 `str(d).strip()`，于是 `data/files` 被按 **CWD**
+        #    解释，而这个插件真正落盘的地方是**框架数据目录**。
+        #    结果：关掉 `upload_allow_any_path` 后，白名单**静默失效** ——
+        #    用户配了白名单，自己刚下载到 `<data>/files` 的文件却传不上去
+        #    （报错还说"只允许上传下列目录"，列出的正是那个目录，非常迷惑）。
+        # ⚠️ 同样丢掉解析后为空的条目（空串 realpath 之后 = CWD，
+        #    会让白名单意外放行启动目录下的一切）。
+        self.upload_allowed_dirs = [
+            d for d in (self._resolve_data_dir(x)
+                        for x in _as_list(_dirs)) if d]
 
         try:
             ct = float(cfg.get("command_timeout"))
@@ -675,9 +746,18 @@ class BrowserPlugin(BasePlugin):
         # 白名单、字面量本机判定 —— 绝大多数情况在这里就有结论。
         ok, reason = security.check_url(
             url, allowed=self.allowed_domains, blocked=self.blocked_domains,
-            for_write=for_write, local_access=True)
+            for_write=for_write, local_access=True,
+            local_file_access=self.local_file_access,
+            file_allow_any_path=self.file_allow_any_path,
+            file_allowed_dirs=self.file_allowed_dirs)
         if not ok:
             return ok, reason
+
+        # ⚠️ 本机文件在这里就到底了 —— 它没有域名，不存在"解析到内网"的问题。
+        #    不早退的话，下面的 `is_local_host` / `resolved_url_is_internal_async`
+        #    会拿空 host 去查 DNS，白等一次超时。
+        if security.parse_scheme(url) in security.FILE_SCHEMES:
+            return True, ""
 
         # 允许本机时，前面那步已是最终答案
         if self.local_access:
@@ -1293,7 +1373,15 @@ class BrowserPlugin(BasePlugin):
         else:
             # ⚠️ 同样不能写相对路径（`data/temp`）—— CWD 一变就落到别处。
             #    这里没有 headless 后端可问，就用框架数据目录推。
-            from backends.headless_backend import _framework_data_path
+            # ⚠️ 必须是**相对导入**（`from .backends...`）。
+            #    写 `from backends.headless_backend import ...` 是绝对导入 ——
+            #    插件以包的形式加载（`<pkg>.main`）时 `backends` 不是顶层模块，
+            #    这条会抛 ImportError: attempted relative import beyond top-level
+            #    package。而它只在"headless 后端没注册"这一条分支里，
+            #    平时走不到 ⇒ **静默**：真走到时整个 browser_diag(action="visible")
+            #    直接崩。同文件里已经因为同样的坑栽过一次（见上面
+            #    `_umb = ... ExtensionBackend.MAX_UPLOAD_BYTES` 那段注释）。
+            from .backends.headless_backend import _framework_data_path
             _base = _framework_data_path(Path(self.ctx.get_plugin_data_dir()))
             _d = _base / "temp"
             os.makedirs(_d, exist_ok=True)
@@ -1542,9 +1630,14 @@ class BrowserPlugin(BasePlugin):
 
     @register.tool(
         name="browser_navigate",
-        description="打开网址。",
+        description=(
+            "打开网址，**也可以打开本机文件**（图片 / PDF / 文本 / 视频等）。"
+            "url 直接写完整路径即可，如 /data/temp/a.png 或 "
+            "C:\\Users\\me\\Desktop\\a.pdf，插件会自动转成能打开的地址。"
+        ),
         params={"type": "object", "properties": {
-            "url": {"type": "string", "description": "完整网址"},
+            "url": {"type": "string",
+                    "description": "完整网址，或本机文件路径"},
             "new_tab": {"type": "boolean"}},
             "required": ["url"]},
     )
@@ -1554,6 +1647,18 @@ class BrowserPlugin(BasePlugin):
         url = (url or "").strip()
         if not url:
             return "❌ 没给网址"
+        # ⚠️ **先判本地路径**，再判 scheme。
+        #    顺序反过来的话，`C:\Users\me\a.png` 会被当成 scheme "c:" 直接放行，
+        #    最后报一个谁也看不懂的 URL 错误 —— 这正是用户遇到的形态之一。
+        if security.looks_like_local_path(url):
+            # ⚠️ 记下"用户给的是相对路径"这件事 —— 转成 file:// 之后就看不出来了
+            #    （`definitely_not_here\x.png` → `file:///definitely_not_here/x.png`，
+            #    看着就是个绝对路径）。报错时要用这个标记告诉用户
+            #    "请给完整路径"，否则他会去反复检查一个其实写对了的文件名。
+            _was_relative = not security.is_absolute_local_path(url)
+            url = security.path_to_file_url(url)
+        else:
+            _was_relative = False
         # ⚠️ 只在"**完全没有 scheme**"时才补前缀。
         #    原来是 `if not url.startswith(("http://", "https://")): url = "https://" + url`
         #    —— 于是 `about:blank` 变成 `https://about:blank`、`edge://settings`
@@ -1578,9 +1683,48 @@ class BrowserPlugin(BasePlugin):
             _scheme = "http" if (_host in ("localhost", "127.0.0.1", "::1")
                                  or _host.endswith(".local")) else "https"
             url = f"{_scheme}://" + url.lstrip("/")
+        # ⚠️ 本地文件先查一遍"在不在"。
+        #    不然这条会一路走到浏览器里，报一句
+        #   `net::ERR_FILE_NOT_FOUND`（或扩展的 "Invalid url"），
+        #    模型不知道是路径写错了还是权限没开。这里直接说清楚。
+        if security.parse_scheme(url) in security.FILE_SCHEMES:
+            # ⚠️ **先判策略，再判文件在不在**。顺序反过来的话：
+            #    · 用户把「允许打开本机文件」关掉后，仍然能从返回的
+            #      "文件不存在/存在"反推出磁盘上的情况 ——
+            #      一个已经关掉的开关不该还能被用来探测文件系统；
+            #    · 报错也会指向错误的方向（用户以为路径写错了，
+            #      其实是策略拦的）。
+            if not self.local_file_access:
+                return ("打开本机文件已按配置关闭（「允许打开本机文件」）。"
+                        "如确实需要，请在插件配置里打开它。")
+            _ok, _why = security.check_url(
+                url, local_file_access=True,
+                file_allow_any_path=self.file_allow_any_path,
+                file_allowed_dirs=self.file_allowed_dirs)
+            if not _ok:
+                return f"❌ {_why}"
+            _p = security.file_url_to_path(url)
+            if not _p or not os.path.isfile(_p):
+                return (f"❌ 本机不存在这个文件：{_p or url}\n"
+                        f"（路径要写全：Windows 形如 C:\\Users\\me\\a.png，"
+                        f"Linux/macOS 形如 /home/me/a.png）"
+                        + ("\n⚠️ 你给的是**相对路径**，它的基准取决于"
+                           "KiraAI 的启动目录，插件没法可靠地猜 —— "
+                           "请换成**完整路径**再试。"
+                           if _was_relative else ""))
         # ⚠️ 导航完**顺手把新页面带回来** —— "导航 → 再看一眼"是浏览器里
         #    最常见的两次调用，合起来才够用（框架默认每轮只有 5 次）。
         r = await self._call("navigate", for_write=True, url=url, new_tab=new_tab)
+        # ⚠️ 本地文件**不要**顺手回正文：
+        #    · HTML → 回一大堆标签源码，对模型没用、纯烧 token；
+        #    · 图片 / 视频 / PDF → 根本没有可读文本，回了也是空；
+        #    而"看画面"本来就该走 browser_screenshot（截渲染后的画面）。
+        if security.parse_scheme(url) in security.FILE_SCHEMES:
+            return (f"{r}\n\n📂 这是本机文件（不是网页）。\n"
+                    f"· 要看**画面**（图片 / 视频 / PDF / 渲染出的效果）"
+                    f"→ 用 browser_screenshot；\n"
+                    f"· 要看**纯文本内容**（txt / md / 代码等）"
+                    f"→ 用 browser_page。")
         return await self._with_page_after(r, chars=800)
 
     # ── 5. 脚本 ──────────────────────────────────────────────────────

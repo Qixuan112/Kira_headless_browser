@@ -34,3 +34,13 @@ regression/_ext_client.mjs
 regression/kira_ext_client_*.mjs
 regression/**/kira_ext_client_*.mjs
 regression/js/_click_runner_*.mjs
+
+# 插件目录下的运行期临时产物。
+# ⚠️ 原来只忽略了 data/*.log，漏了 data/temp/ —— 而回归测试（以及真机运行）
+#    会在这里落截图 / VLM 压缩图这类二进制垃圾。漏掉它的后果是
+#    "跑一遍测试 → git status 多出几个 MB 的图片"，很容易被顺手 git add -A
+#    带进提交（本项目就发生过一次：一次 PR 里混进 4 张 662KB 的图，
+#    把 diff 撑到 2.8MB）。运行时产物一律不该进版本库。
+data/temp/
+data/downloads/
+

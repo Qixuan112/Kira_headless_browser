@@ -148,9 +148,46 @@ _HEADLESS_ONLY_ARGS = [
     "--js-flags=--max-old-space-size=512",
 ]
 
-#: 可视模式：补回窗口可见性参数。
+#: 本地文件的扩展名分类 —— 决定"该用哪种方式看"。
 #:
-#: ⚠️ 关于"删掉后台节流参数会不会影响可视化"——**不会**，理由：
+#: ⚠️ PDF 单独一类是有原因的：Chromium 的 PDF 阅读器是一个**内置组件扩展**，
+#:    而 Playwright 默认用的 `chrome-headless-shell` **不带**它 ——
+#:    于是 `file:///x.pdf` 会被当成"要下载的文件"，导航直接 ERR_ABORTED。
+#:    图片则相反：headless shell 有完整的图片解码，file:// 的图片正常显示。
+#:    ⇒ 不能笼统地说"本地文件都能开"，得按类型给不同的话。
+PDF_EXTS = frozenset({".pdf"})
+MEDIA_EXTS = frozenset({".mp4", ".webm", ".mkv", ".mov", ".avi", ".m4v",
+                        ".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac"})
+IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
+                        ".svg", ".ico", ".avif"})
+TEXT_EXTS = frozenset({".txt", ".md", ".json", ".csv", ".log", ".xml", ".yml",
+                       ".yaml", ".ini", ".conf", ".py", ".js", ".ts", ".html",
+                       ".css", ".sh", ".sql", ".toml"})
+
+#: 需要"渲染器"才能看、而 headless shell 不一定带的那几类
+_MEDIA_EXTS = PDF_EXTS | MEDIA_EXTS
+
+
+def _is_viewable_media(ext: str, url: str = "") -> bool:
+    """这个本地文件是不是"必须有渲染器才能看"的那类（PDF / 音视频）。"""
+    return (ext or "").lower() in _MEDIA_EXTS
+
+
+def _nav_aborted(exc: Exception) -> bool:
+    """导航失败是不是"被中止"这一类（Playwright 把 PDF/媒体当下载时的表现）。
+
+    ⚠️ 不能只看 ERR_ABORTED 一个串：不同 Chromium 版本给的是
+    `net::ERR_ABORTED` / `net::ERR_UNSAFE_REDIRECT` / 甚至一句
+    "Download is starting"。所以按**几个已知特征**一起判。
+    """
+    m = str(exc or "")
+    return any(k in m for k in (
+        "ERR_ABORTED", "ERR_UNSAFE_REDIRECT", "Download is starting",
+        "net::ERR_", "Protocol error", "Target closed",
+    ))
+
+
+#: 可视模式：补回窗口可见性参数。#: ⚠️ 关于"删掉后台节流参数会不会影响可视化"——**不会**，理由：
 #:
 #:  1. 那三个参数（background-timer-throttling / backgrounding-occluded-windows
 #:     / renderer-backgrounding）**不是窗口可见性开关**，它们只关掉"省电降频"。
@@ -1074,6 +1111,10 @@ class HeadlessBackend(Backend):
         err = await self._ready()
         if err:
             return OpResult.fail(err, self.name)
+        # 本机文件 → 记下扩展名，好在"打不开"时给出**能照做**的解释。
+        # （PDF / 音视频在 headless shell 下会被当成下载而中止导航）
+        _is_file = str(url or "").lower().startswith("file:")
+        _ext = os.path.splitext(str(url).split("?")[0].split("#")[0])[1].lower()
         try:
             if new_tab:
                 # ⚠️ 先建新页、认领，再关旧页。
@@ -1095,7 +1136,41 @@ class HeadlessBackend(Backend):
             return OpResult(data={"url": self._page.url, "title": title,
                                   "navigated": True, "tab_id": 0}, backend=self.name)
         except Exception as e:
+            # ⚠️ 本机 PDF / 音视频在**无头 shell** 下打不开时，Playwright 报的是
+            #    `net::ERR_ABORTED`（它把 PDF 当成"要下载的东西"，于是中止导航）。
+            #    原文对模型毫无用处，只会让它以为文件有问题。这里翻译成
+            #    "这个后端渲染不了 PDF，换一条路" 这种**能照做**的话。
+            if _is_file and _is_viewable_media(_ext, url) and _nav_aborted(e):
+                return OpResult.fail(self._file_render_hint(url, _ext), self.name)
             return OpResult.fail(f"访问页面失败: {e}", self.name)
+
+    def _file_render_hint(self, url: str, ext: str) -> str:
+        """本机 PDF / 音视频在当前无头浏览器里渲染不了 → 给出能照做的办法。
+
+        ⚠️ 为什么会这样（不是 bug，是浏览器的实现差异）：
+           Chromium 的 PDF 阅读器是一个**内置组件扩展**，
+           Playwright 默认用的 ``chrome-headless-shell`` **不带**它；
+           而 ``channel="chromium"``（新版无头模式 = 完整的 Chrome 内核）
+           带。所以同一个 file:// 的 PDF，一个能开、一个报 ERR_ABORTED。
+
+        这里不去偷偷换通道（那会改变"这次用的是哪套浏览器"这一事实，
+        和插件"绝不中途换后端"的规矩冲突），只把原因和两条出路说清楚。
+        """
+        kind = "音视频" if ext in _MEDIA_EXTS else "PDF"
+        return (
+            f"这个无头浏览器（{self.display}）打不开本机 {kind}（{url}）。\n"
+            f"原因：当前用的是 Playwright 自带的 **headless shell**，"
+            f"它不含 Chromium 的内置 {kind} 播放/阅读组件 —— "
+            f"导航会被当成「下载」而中止（错误原文通常是 net::ERR_ABORTED）。\n"
+            f"三条能走通的路：\n"
+            f"  1. 用**你自己的浏览器**（装了配套扩展就行）："
+            f"browser_backend(action=\x22use\x22, use=\x22extension\x22)"
+            f"（若扩展侧提示需要「允许访问文件网址」，照着它给的步骤开一次即可）；\n"
+            f"  2. 让无头后端改用**新版无头模式**（完整的 Chrome 内核，含 PDF 阅读器）："
+            f"把插件配置的「浏览器来源」设成 chromium 并重载插件；\n"
+            f"  3. 只想读**文本**的话不必渲染：PDF 可以用 browser_file 下载下来，"
+            f"再用其它方式读；图片本身可以直接用 browser_file(mode=\"list\") 找到并发送。"
+        )
 
     async def click(self, selector=None, text=None, index=None, **kw) -> OpResult:
         err = await self._ready()

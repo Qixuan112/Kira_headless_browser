@@ -24,6 +24,7 @@ import {
   state, links, activity, otherWriterFor,
   sendRaw, sendResult, sendEvent, sendChunk,
   resolveTab, assertInjectable, callContent, detectBrowser,
+  isFileAccessAllowed, invalidateFileAccessCache, fileAccessHelp,
   askUser, confirmTimeoutMs, resolveConfirm,
   NEEDS_CONFIRM_COMMANDS, confirmPromptFor,
   isLinkStale, WS_STALE_MS, staleLogDecision,
@@ -889,7 +890,7 @@ async function listTabs() {
 
 async function getPage(params) {
   const tab = await resolveTab(params.tab_id);
-  assertInjectable(tab);
+  await assertInjectable(tab);
 
   const detail = params.detail || "text";
   const res = await callContent(tab, "get_page", { detail }, 20000);
@@ -1084,6 +1085,14 @@ function waitForLoad(tabId, timeoutMs = 12000) {
 }
 
 async function navigate(params) {
+  // ⚠️ 打开本机文件（file://）时**先看用户有没有打开那个开关**。
+  //    不开的话 `chrome.tabs.update` 会抛
+  //    "Cannot navigate to a file URL without local file access" ——
+  //    那句话对模型毫无用处（它不知道去哪开、甚至不知道这是浏览器设置）。
+  //    这里提前换成一段能照做的说明。
+  if (/^file:/i.test(params.url || "") && !(await isFileAccessAllowed())) {
+    throw new Error(fileAccessHelp(params.url));
+  }
   if (params.new_tab) {
     const tab = await chrome.tabs.create({ url: params.url, active: true });
     // ⚠️ 等它真的加载完再返回 —— 否则上层立刻读页面会读到旧内容
@@ -1092,7 +1101,18 @@ async function navigate(params) {
   }
 
   const tab = await resolveTab(params.tab_id);
-  await chrome.tabs.update(tab.id, { url: params.url, active: true });
+  try {
+    await chrome.tabs.update(tab.id, { url: params.url, active: true });
+  } catch (e) {
+    // ⚠️ 兜底：探测说"允许"、真导航时却被拒（用户刚在里面关掉开关，
+    //    或浏览器版本差异）。这里把原始报错翻译成同一段可照做的说明。
+    const m = String((e && e.message) || e || "");
+    if (/file URL|file:\/\//i.test(m)) {
+      invalidateFileAccessCache();      // 缓存作废，下次重新问
+      throw new Error(fileAccessHelp(params.url));
+    }
+    throw e;
+  }
   const load = await waitForLoad(tab.id, params.wait_ms || 12000);
   return { ok: true, tab_id: tab.id, url: params.url, navigated: true, load };
 }
@@ -1108,7 +1128,7 @@ async function scroll(params) {
 
 async function click(params) {
   const tab = await resolveTab(params.tab_id);
-  assertInjectable(tab);
+  await assertInjectable(tab);
 
   const beforeUrl = tab.url;
 
@@ -1139,7 +1159,7 @@ async function click(params) {
 
 async function typeText(params) {
   const tab = await resolveTab(params.tab_id);
-  assertInjectable(tab);
+  await assertInjectable(tab);
 
   const beforeUrl = tab.url;
   const res = await callContent(tab, "type", {

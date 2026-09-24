@@ -616,6 +616,51 @@
       }
     }
   },
+  "local_file_access": {
+    "name": "Allow Opening Local Files",
+    "type": "switch",
+    "default": true,
+    "hint": "ON (default): the AI may open local files in the browser - images, PDFs, text, video, HTML. This is what \"take a look at this picture / this PDF\" needs, and it works in the plugin's own headless browser as well as in yours. OFF: file:// addresses are refused entirely (use this if you don't want the AI to reach anything on your disk). Note this is a separate switch from \"Allow Local / Intranet Access\" (that one is about localhost web servers). For your own browser, Chromium also has its own per-extension \"Allow access to file URLs\" toggle - if it's off, the plugin tells you exactly how to turn it on.",
+    "locales": {
+      "zh": {
+        "name": "允许打开本机文件",
+        "hint": "开启（默认）：AI 可以用浏览器打开本机文件 —— 图片、PDF、文本、视频、HTML 等。这就是「帮我看看这张图 / 这份 PDF」所需要的，插件自带的无头浏览器和你自己的浏览器都支持。关闭：file:// 一律拒绝（不想让 AI 碰到你磁盘上任何东西时用）。注意这与上面的「允许访问本机 / 内网」是两个开关：那一个管的是 localhost 上的网页服务，这一个管的是磁盘文件。另外，用你自己的浏览器时 Chromium 还有一个「允许访问文件网址」的扩展级开关；如果它没开，插件会告诉你怎么开。"
+      },
+      "en": {
+        "hint": "On (default): the AI may open local files in the browser - images, PDFs, text, video, HTML. This is what \"take a look at this picture / this PDF\" needs. Off: file:// addresses are refused entirely. This is separate from \"Allow Local / Intranet Access\" (that one is about localhost web servers)."
+      }
+    }
+  },
+  "file_allow_any_path": {
+    "name": "Allow Opening Any Path",
+    "type": "switch",
+    "default": true,
+    "hint": "ON (default): any local path may be opened - images and documents are often on the Desktop or in the Downloads folder, and this is the same permissive default as \"Allow uploading any path\". OFF: only paths under \"Allowed local file directories\" are permitted. Paths are resolved with realpath, so ../ traversal is blocked. Note: network shares (file://server/share) are refused in both cases - that's not a local file.",
+    "locales": {
+      "zh": {
+        "name": "本机文件允许任意路径",
+        "hint": "开启（默认）：任意本机路径都能打开 —— 图片和文档常在桌面或下载目录里，而这与上面的「上传允许任意路径」是同一个取向。关闭：只允许「本机文件目录白名单」里的目录。路径会用 realpath 归一，能防 ../ 穿越。注意：网络共享（file://server/share）在两种情况下都会被拒 —— 那不是本机文件。"
+      },
+      "en": {
+        "hint": "On (default): any local path may be opened. Off: only paths under \"Allowed local file directories\" are permitted (realpath-resolved, so ../ traversal is blocked)."
+      }
+    }
+  },
+  "file_allowed_dirs": {
+    "name": "Allowed Local File Directories",
+    "type": "list",
+    "default": ["data/files", "data/temp", "data/downloads"],
+    "hint": "Only applies when \"Allow opening any path\" is off. Paths are resolved with realpath, so ../ traversal is blocked.\n\nDefault: data/files, data/temp, data/downloads.",
+    "locales": {
+      "zh": {
+        "name": "本机文件目录白名单",
+        "hint": "只在「本机文件允许任意路径」关闭时生效。路径会用 realpath 归一，能防 ../ 穿越。\n\n默认：data/files、data/temp、data/downloads。"
+      },
+      "en": {
+        "hint": "Only applies when \"Allow opening any path\" is off. Paths are resolved with realpath, so ../ traversal is blocked.\n\nDefault: data/files, data/temp, data/downloads."
+      }
+    }
+  },
   "allow_remote_pairing": {
     "name": "Allow remote pairing",
     "type": "switch",

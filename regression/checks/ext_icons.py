@@ -152,6 +152,24 @@ def run(r) -> None:
          detail or f"{sizes}（单张预算 {BUDGET}，合计 ≤ {TOTAL_BUDGET} 字节）")
 
     # ── 反向自检：坏图标必须被抓出来（证明断言真的会响）──────────────
+    # ⚠️ 这一段的 `shutil.copy2(ext_dir / "manifest.json", ...)` 在文件缺失时
+    #    会抛 FileNotFoundError → **整段检查中断**（I2~I5 全都不跑）。
+    #    删文件矩阵会抓到它。所以整个反向自检块要能"缺文件就跳过并报出来"。
+    _mf_src = ext_dir / "manifest.json"
+    if not _mf_src.is_file():
+        r.ok("I2 反向自检：坏图标必须被抓出来",
+             False, f"manifest.json 缺失（{_mf_src}），反向自检无法进行")
+    else:
+        _run_icons_selftest(r, ext_dir, icons)
+
+
+def _run_icons_selftest(r, ext_dir, icons) -> None:
+    """反向自检的正身：往临时副本塞坏图标，判据必须报红。
+
+    ⚠️ 抽成独立函数是为了让"manifest 缺失"这种情况能**优雅跳过**
+    （见 run() 里的那个 if）—— 否则 `shutil.copy2` 抛的
+    FileNotFoundError 会让 I2~I5 一条都不跑，报告上只剩笼统的"未抛异常"。
+    """
     with tempfile.TemporaryDirectory() as td:
         fake = Path(td) / "browser-bridge"
         fake.mkdir(parents=True)

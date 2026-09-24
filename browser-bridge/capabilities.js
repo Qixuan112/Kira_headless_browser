@@ -100,7 +100,7 @@ async function execJs(params) {
   if (!script || !script.trim()) throw new Error("缺少 script");
 
   const tab = await resolveTab(tab_id);
-  assertInjectable(tab);
+  await assertInjectable(tab);
 
   const chk = await ensureUserScripts();
   if (!chk.ok) {
@@ -237,7 +237,7 @@ async function upload(params) {
   }
 
   const tab = await resolveTab(tab_id);
-  assertInjectable(tab);
+  await assertInjectable(tab);
 
   const id = "up_" + Date.now().toString(36) + "_"
     + Math.random().toString(36).slice(2, 10);

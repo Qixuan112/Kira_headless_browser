@@ -354,3 +354,88 @@ def run(r) -> None:
          f"零引用={_dead or '无'}（可能是重构后忘了删，或名字改了没跟着改）")
     for _d in _dead:
         r.note(f"   💀 {_d}")
+
+    # ── F. 函数体里的**绝对导入** —— 插件是以包加载的，这种写法会崩 ──
+    #
+    #  ⚠️ 这类 bug 的特征是"平时不崩"：它只在**某条分支**里执行，而那条分支
+    #     平时走不到 ⇒ 静态检查看不见、常规启动也不报错，真走到时直接
+    #     ImportError 把整个工具调用打掉。
+    #
+    #     真实案例（同一个文件里栽过两次）：
+    #       · `from backends.extension_backend import ...` —— 想读
+    #         MAX_UPLOAD_BYTES 做钳制，import 失败 → except 吞掉 →
+    #         **钳制静默失效**（配置调到 200MB 也拦不住）；
+    #       · `from backends.headless_backend import _framework_data_path` ——
+    #         只在"无头后端没注册"时执行 ⇒ 真走到时
+    #         `browser_diag(action="visible")` 直接崩。
+    #
+    #     判据：插件自己的模块**只能**用相对导入（`from .xxx` /
+    #     `from ..xxx`）。理由：插件以 `<pkg>.main` 的形式加载时，
+    #     `backends` / `security` 这些**不是**顶层模块名。
+    #     框架的模块（`from core.xxx`）当然仍用绝对导入 —— 它们是顶层包。
+    _top_names = {"backends", "security", "protocol", "bridge", "tokens",
+                  "vlm", "cookies", "setup_guide"}
+    _abs_imports = []
+    for f in _iter_py():
+        try:
+            tree = ast.parse(f.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for n in ast.walk(tree):
+            if isinstance(n, ast.ImportFrom):
+                # level=0 才是绝对导入（level>0 就是相对导入，安全）
+                if n.level == 0 and n.module:
+                    _root = n.module.split(".")[0]
+                    if _root in _top_names:
+                        _abs_imports.append(
+                            f"{f.relative_to(PLUGIN_DIR)}:{n.lineno} "
+                            f"from {n.module} import …")
+            elif isinstance(n, ast.Import):
+                for _a in n.names:
+                    if _a.name.split(".")[0] in _top_names:
+                        _abs_imports.append(
+                            f"{f.relative_to(PLUGIN_DIR)}:{n.lineno} "
+                            f"import {_a.name}")
+    r.ok("F1 插件自己的模块一律用相对导入（绝对导入在包加载下必抛 ImportError）",
+         not _abs_imports,
+         f"绝对导入={_abs_imports or '无'}"
+         f"（这类 import 常在 except 里被吞掉 ⇒ 静默失效）")
+    for _ai in _abs_imports:
+        r.note(f"   ❗ {_ai}")
+
+    # ── F2. 真跑一次：以**包**的形式加载 main.py，那条冷分支也要能走通 ──
+    #
+    #  ⚠️ F1 是静态的（只看写法）。这一条**真执行**：把插件当包 import 起来，
+    #     再走一遍"headless 后端没注册"时 screenshot 取目录的那条路径。
+    #     只看 F1 的话，`importlib` 动态导入、或未来别的新写法都躲得过去。
+    from ..harness import install_stubs as _install
+    import subprocess as _sp
+    import sys as _sys
+    import os as _os
+    _probe = (
+        "import sys, types\n"
+        f"ROOT = {str(PLUGIN_DIR)!r}\n"
+        "sys.path.insert(0, ROOT)\n"
+        "sys.path.insert(0, ROOT + '/regression/stubs')\n"
+        "import regression.harness as h; h.install_stubs()\n"
+        "pkg = types.ModuleType('hb_pkgcheck'); pkg.__path__ = [ROOT]\n"
+        "sys.modules['hb_pkgcheck'] = pkg\n"
+        "import hb_pkgcheck.main as M\n"
+        # 冷分支：无 headless 后端时取截图目录（原来那条绝对导入就在这儿）
+        "from pathlib import Path\n"
+        "from hb_pkgcheck.security import path_to_file_url\n"
+        "from hb_pkgcheck.backends.headless_backend import _framework_data_path\n"
+        "print('PROBE_OK')\n"
+    )
+    _env = dict(_os.environ)
+    _env["PYTHONDONTWRITEBYTECODE"] = "1"
+    try:
+        _p = _sp.run([_sys.executable, "-c", _probe], capture_output=True,
+                     text=True, env=_env, timeout=120, cwd="/tmp")
+        _ok_pkg = "PROBE_OK" in (_p.stdout or "")
+        _detail = "" if _ok_pkg else (
+            (_p.stdout or "")[-200:] + (_p.stderr or "")[-400:])
+    except Exception as e:                                   # noqa: BLE001
+        _ok_pkg, _detail = False, f"{type(e).__name__}: {e}"
+    r.ok("F2 以**包**形式加载 main.py 能成功（冷分支的 import 也会走到）",
+         _ok_pkg, _detail)

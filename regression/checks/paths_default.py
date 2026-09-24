@@ -87,7 +87,83 @@ def run(r) -> None:
     r.ok("C2 有 _framework_data_path()（取不到框架时退回插件数据目录的上两级）",
          has_helper, "" if has_helper else "找不到该函数，默认值可能又变回相对路径")
 
-    # ── ③ 行为验证：用**真**框架 path_utils 跑两种情形 ────────────────
+    # ── ③ 白名单语义（**不依赖 KIRA_FW_DIR**，所以放在 C3 的 return 之前）──
+    #
+    #  ⚠️ 顺序很要紧：这一段必须排在 `if pu is None: return` **前面**，
+    #     否则没设 KIRA_FW_DIR 的环境（CI / 别人的机器）会把这两条
+    #     **安全相关**的判据静默跳过 —— 而"静默跳过"正是这类 bug 的温床。
+    #
+    #  ⚠️ 抓的是什么：白名单里写 `data/files`，KiraAI 的语义是
+    #     `<框架数据目录>/files`；按 CWD 解释就会指到 `<启动目录>/data/files`。
+    #     后果是开关**静默失效**：
+    #       · 用户配了白名单，自己刚下载到 `<data>/files` 的文件
+    #         却判"不在允许目录内"（报错还把那个目录列出来，非常迷惑）；
+    #       · 反过来，CWD 下恰好存在同名目录时会被**意外放行**（安全开关名不副实）。
+    #     与 `backends/headless_backend.py` 的 `_resolve_user_dir` 是同一套规矩。
+    _main_src = src_safe("main.py")
+    _wl_bad = []
+    for _attr in ("upload_allowed_dirs", "file_allowed_dirs"):
+        _lines = _main_src.splitlines()
+        for _i, _line in enumerate(_lines):
+            if f"self.{_attr} = [" not in _line:
+                continue
+            # 往后拼到方括号配平为止（赋值可能写成多行）
+            _stmt, _depth = _line, _line.count("[") - _line.count("]")
+            _j = _i + 1
+            while _depth > 0 and _j < len(_lines):
+                _stmt += " " + _lines[_j].strip()
+                _depth += _lines[_j].count("[") - _lines[_j].count("]")
+                _j += 1
+            if "_resolve_data_dir" not in _stmt:
+                _wl_bad.append(f"{_attr} 没走 _resolve_data_dir")
+    r.ok("C10 目录白名单按框架语义展开（不走就会按 CWD 解释 ⇒ 静默失效）",
+         not _wl_bad, f"问题={_wl_bad or '无'}")
+    r.ok("C10b 有 _resolve_data_dir() 解析器（缺了就说明有人把语义又改回去了）",
+         "def _resolve_data_dir" in _main_src)
+    # ⚠️ C10c：白名单必须**丢掉解析后为空的条目**。
+    #    空串经 realpath 之后会变成 **CWD** ⇒ 白名单意外放行启动目录下的
+    #    一切。一个空配置项就把安全开关打开，而且完全看不出来。
+    r.ok("C10c 白名单丢掉了空条目（空串 realpath 后 = CWD，会意外放行）",
+         _main_src.count("if d]") >= 2,
+         f"找到 {_main_src.count('if d]')} 处过滤（upload / file 各一处）")
+
+    # C11：**真跑**解析器，证明白名单落点与后端实际产出目录是**同一个地方**。
+    #   C10 只是静态扫描（"写没写那个函数"）；这一条真调，把结果与
+    #   HeadlessBackend 的下载/截图目录对比 —— 两者必须一致，
+    #   否则"白名单"与"实际产出"对不上，开关就是坏的。
+    #   ⚠️ 用 runtime_behavior._load_plugin()（与下面 C5 同一套加载方式）——
+    #      它已经把插件按**包**加载好，`hb.HeadlessBackend` 拿到的就是
+    #      真正被测的那个类（而不是另 import 一份）。
+    try:
+        import types as _types
+        _pkg = _types.ModuleType("hb_paths_probe")
+        _pkg.__path__ = [str(PLUGIN_DIR)]
+        sys.modules["hb_paths_probe"] = _pkg
+        _M = __import__("hb_paths_probe.main", fromlist=["main"])
+        _inst = _M.BrowserPlugin.__new__(_M.BrowserPlugin)
+        _fw_base = Path(get_data_path())
+        _pdd = str(_fw_base / "plugin_data" / "headless_browser")
+        _inst.ctx = type("C", (), {
+            "get_plugin_data_dir": staticmethod(lambda: _pdd)})()
+        _wl = {d: _inst._resolve_data_dir(d)
+               for d in ("data/files", "data/temp")}
+        # 用同一套加载器拿到 HeadlessBackend（保证是"被测那一份"）
+        _hb_mod = __import__("hb_paths_probe.backends.headless_backend",
+                             fromlist=["HeadlessBackend"])
+        _bb = _hb_mod.HeadlessBackend(Path(_pdd), {})
+        _same = (os.path.realpath(_wl["data/files"])
+                 == os.path.realpath(_bb.download_dir)
+                 and os.path.realpath(_wl["data/temp"])
+                 == os.path.realpath(_bb.screenshot_dir))
+        r.ok("C11 白名单解析结果 == 后端实际产出目录（两处口径必须一致）",
+             _same,
+             f"白名单 data/files → {_wl['data/files']}；"
+             f"后端下载目录 → {_bb.download_dir}")
+    except Exception as _e:                                   # noqa: BLE001
+        r.ok("C11 白名单解析结果 == 后端实际产出目录（两处口径必须一致）",
+             False, f"{type(_e).__name__}: {_e}")
+
+    # ── ④ 行为验证：用**真**框架 path_utils 跑两种情形 ────────────────
     pu = _load_framework_path_utils()
     if pu is None:
         r.warn("C3 行为验证（需要 KIRA_FW_DIR 指向真实 KiraAI 仓库）", "未设置 KIRA_FW_DIR")

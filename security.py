@@ -1,30 +1,59 @@
-"""域名白名单 / 黑名单校验。
+"""域名白名单 / 黑名单校验 + 本地文件访问判定。
 
 规则：
     - 黑名单优先级最高，命中即拒绝（读和写都拒）
     - 白名单为空 → 读操作放行、写操作放行（但受黑名单约束）
     - 白名单非空 → 只有命中白名单的域名允许**写**操作，读操作仍然放行
     - 支持 ``*`` 通配符，如 ``*.example.com``、``*.bank*``
-    - 特殊 scheme（``chrome://`` / ``file://`` / ``about:`` 等）默认拒绝
+    - 浏览器内部 scheme（``chrome://`` / ``about:`` 等）一律拒绝 ——
+      那是浏览器的**硬边界**，`<all_urls>` 也不包含，任何扩展都进不去
+    - ``file://`` **单独一条通道**（见下），由「允许打开本机文件」开关管辖
 
 匹配对象是 host（不含端口），从 URL 中解析。扩展侧也会做一次同样的校验，
 这里是服务端的权威判定 —— 不能只依赖扩展。
+
+## ``file://`` 为什么是独立开关，而不是塞进黑名单
+
+早期版本把 ``file`` 直接写进 `BLOCKED_SCHEMES`，理由是"扩展也拿不到权限"。
+那句话**只对了一半**：扩展默认确实读不了本地文件，但用户在扩展详情页
+打开「允许访问文件网址」之后就能了；而无头浏览器（浏览器自己启动的那个）
+**从来没有这条限制**。于是那一条硬编码把两个后端同时钉死 ——
+用户和 bot 都没法用浏览器打开本地图片 / PDF / 文本 / 视频，
+而这恰恰是最自然的用法（"帮我看看这张图"）。
+
+所以拆成两个正交的开关：
+
+* ``local_file_access`` —— 能不能打开本机文件（默认开，与 `local_access`
+  同一个产品取向：本插件就是给 AI 当浏览器用的）；
+* ``file_allow_any_path`` / ``file_allowed_dirs`` —— 开了之后能碰哪些路径
+  （默认任意路径，与 `upload_allow_any_path` 同一套语义）。
 """
 
 from __future__ import annotations
 
 import fnmatch
 import ipaddress
+import os
 import re
 import socket
 from typing import Iterable, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 
-#: 明确不支持的 scheme（扩展也拿不到权限）
+#: 明确不支持的 scheme（浏览器内部页 —— 硬边界，不是权限没开）。
+#:
+#: ⚠️ ``file`` **不在**这里。它的放行/收紧由 `local_file_access` 单独管
+#:    （见模块 docstring）。把它写在这儿会让下面两个后端同时失效。
 BLOCKED_SCHEMES = frozenset({
     "chrome", "chrome-extension", "edge", "about", "devtools",
-    "view-source", "data", "javascript", "file", "blob",
+    "view-source", "data", "javascript", "blob",
 })
+
+#: 本地文件 scheme（单独一条通道，不走域名黑白名单）
+FILE_SCHEMES = frozenset({"file"})
+
+#: 打开本地文件时**默认**允许的目录（仅 ``file_allow_any_path`` 关掉时生效）。
+#: 与上传白名单同一组默认值 —— 这两个功能面对的"插件自己产出的文件"是同一批。
+DEFAULT_FILE_DIRS = ("data/files", "data/temp", "data/downloads")
 
 #: 本机地址的等价写法。
 #: ``127.0.0.1`` / ``localhost`` 靠默认黑名单就能挡住，但 ``[::1]``（IPv6
@@ -262,6 +291,163 @@ def parse_scheme(url: str) -> str:
         return (urlparse(url).scheme or "").lower()
     except Exception:
         return ""
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  file:// —— 路径解析与白名单
+# ══════════════════════════════════════════════════════════════════════
+
+def file_url_to_path(url: str) -> Optional[str]:
+    """``file://`` URL → 本机路径；不是本地文件 URL 时返回 None。
+
+    要处理的形态（都是真实会出现的）：
+
+    ==========================================  =====================
+    输入                                        结果
+    ==========================================  =====================
+    ``file:///C:/Users/x/a.png``                ``C:/Users/x/a.png``
+    ``file:///home/u/a.pdf``                    ``/home/u/a.pdf``
+    ``file://localhost/tmp/a.txt``              ``/tmp/a.txt``
+    ``file:///tmp/%E4%B8%AD%E6%96%87.png``      ``/tmp/中文.png``
+    ``file://server/share/a.png``               ``\\\\server\\share\\a.png``
+    ==========================================  =====================
+
+    ⚠️ Windows 盘符那条**不能**走 ``urlparse().path`` 后直接判断 ——
+       ``file:///C:/x`` 的 path 是 ``/C:/x``，多一个前导斜杠；
+       而 ``file:///home/u`` 的 path 是 ``/home/u``，那个斜杠是**真的**。
+       判据是"斜杠后紧跟单个字母 + 冒号"，只在这种形态下剥掉。
+
+    ⚠️ 必须 ``unquote``：用户/模型给的路径里有中文或空格时，
+       扩展侧看到的是 ``%E4%B8%AD``，不还原就成了字面量路径（必然找不到）。
+    """
+    if parse_scheme(url) not in FILE_SCHEMES:
+        return None
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return None
+
+    # ⚠️ netloc 非空且不是 localhost → 是 UNC（网络共享）。
+    #    这条**必须拦**：`file://server/share` 会把请求发到局域网主机上，
+    #    而我们的"本机文件"开关说的是本机。留着它等于开了个 SMB 探测口。
+    host = (parsed.netloc or "").split("@")[-1].split(":")[0].lower()
+    if host and host not in ("localhost", "127.0.0.1", "::1"):
+        return f"//{host}{unquote(parsed.path or '')}"
+
+    raw = unquote(parsed.path or "")
+    # Windows 盘符：/C:/x → C:/x（只认"一字母 + 冒号"）
+    if re.match(r"^/[A-Za-z]:", raw):
+        raw = raw[1:]
+    if not raw:
+        return None
+    return raw
+
+
+def path_to_file_url(path: str) -> str:
+    """本机路径 → ``file://`` URL（``file_url_to_path`` 的逆）。
+
+    ⚠️ 非 ASCII 与空格必须 percent-encode —— 直接把中文路径拼进 URL 的话，
+       ``urlparse`` 能解析，但扩展/无头那边拿到的会是**未编码**的串，
+       一旦路径里有 ``#`` 或 ``?`` 就会被当成 fragment/query 截断。
+       ``quote`` 的 ``safe`` 只留 ``/`` 与 ``:``（盘符要用）。
+
+    ⚠️ **相对路径绝不能让第一段变成"主机名"**。
+       `data\\temp\\a.png` 若直接拼成 `file://data/temp/a.png`，
+       `urlparse` 会把 `data` 当 netloc ⇒ 被判定成**网络共享**而拒绝，
+       用户看到的是一句莫名其妙的"这不是本机文件"。
+       所以相对路径一律补一个前导 `/`（`file:///data/temp/a.png`），
+       保证 netloc 为空 —— 这样它仍然是"本机文件"这条通道，
+       找不到就是"文件不存在"，报错诚实且可照做。
+    """
+    p = str(path or "").strip().replace("\\", "/")
+    if re.match(r"^[A-Za-z]:", p):
+        # Windows：file:///C:/x
+        return "file:///" + quote(p, safe="/:")
+    if p.startswith("//"):
+        # UNC：file://server/share（调用方通常已拒，这里保持可逆）
+        body = p[2:]
+        head, _, tail = body.partition("/")
+        return "file://" + head + "/" + quote(tail, safe="/:")
+    if not p.startswith("/"):
+        # 相对路径：补前导斜杠，**别让它当主机名**（见 docstring）
+        p = "/" + p
+    return "file://" + quote(p, safe="/:")
+
+
+def is_absolute_local_path(value: str) -> bool:
+    """这个本机路径是不是**绝对**路径。
+
+    用途：相对路径（`data\\temp\\a.png`）没有办法在这里推出正确基准，
+    所以打开失败时要能给出"请给完整路径"这种**说得通**的提示，
+    而不是让用户以为文件真的不存在。
+    """
+    v = (value or "").strip().replace("\\", "/")
+    return bool(re.match(r"^[A-Za-z]:", v)) or v.startswith("/")
+
+
+def looks_like_local_path(value: str) -> bool:
+    """这个字符串像不像**本机路径**（而不是网址 / 域名）？
+
+    用途：``browser_navigate`` 拿到 ``C:\\Users\\x\\a.png``
+    或 ``/data/temp/a.png`` 时，要能认出"用户想打开的是本地文件"
+    并转成 ``file://`` —— 否则会补成 ``https://C:\\Users\\...``
+    然后报一个谁也看不懂的 URL 错误（**这正是本次要修的现象之一**）。
+
+    判据（保守，宁可漏判也不误判，误判会把域名当路径）：
+
+    * 已有 scheme（``http:`` / ``file:`` …）→ 不是路径
+    * 以 ``/`` 开头 → 是（Unix 绝对路径；``//host/share`` 也走这条）
+    * ``X:`` 或 ``X:\\`` 或 ``X:/`` 且 X 是单个字母 → 是（Windows 盘符；
+      ``example.com:8080`` 的冒号前是多个字符，不会被误判）
+    * ``\\\\host\\share`` → 是（Windows UNC）
+    * 其余 → 不是（``example.com/a.png`` 会被当成域名，这是对的）
+    """
+    v = (value or "").strip()
+    if not v:
+        return False
+    if re.match(r"^[A-Za-z][A-Za-z0-9+.\-]*://", v):
+        return False                                   # 已有 scheme，交给后面
+    if v.startswith("\\"):                             # \\host\share 或 \dir
+        return True
+    if v.startswith("/"):
+        return True
+    if re.match(r"^[A-Za-z]:[\\/]", v):                # C:\  /  C:/
+        return True
+    # 反斜杠分隔、但没有盘符（`dir\sub\a.png`）：Windows 上很常见
+    if "\\" in v and "/" not in v and re.match(r"^[^\\/]+\\", v):
+        return True
+    return False
+
+
+def file_path_allowed(path: str, allow_any: bool = True,
+                       allowed_dirs: Iterable[str] = ()) -> Tuple[bool, str]:
+    """本地文件路径是否在允许范围内。
+
+    与 ``main.py`` 的上传白名单**同一套语义**（``os.path.realpath`` 归一后
+    判 ``commonpath``），理由也一样：必须防 ``../`` 穿越 ——
+    否则"只允许 data/temp"形同虚设，写成 ``data/temp/../../../etc/passwd``
+    就绕过去了。
+
+    ⚠️ 在**读文件之前**判。这里的返回值就是最终结论，调用方不要再"自己再看一眼"。
+    """
+    if not path:
+        return False, "路径为空"
+    # UNC（`//host/share`）：不是本机文件
+    if path.startswith("//") or path.startswith("\\\\"):
+        return False, (f"「{path}」是网络共享路径，不是本机文件。"
+                       f"出于安全考虑不允许打开。")
+    resolved = os.path.realpath(path)
+    if allow_any:
+        return True, resolved
+    for d in (allowed_dirs or ()):
+        root = os.path.realpath(str(d))
+        try:
+            if os.path.commonpath((root, resolved)) == root:
+                return True, resolved
+        except ValueError:
+            continue
+    return False, (f"「{resolved}」不在允许的目录内"
+                   f"（{', '.join(str(d) for d in (allowed_dirs or ())) or '未配置'}）")
 
 
 #: 懒加载的 PSL 解析器；None=PUBLIC_SUFFIX_LIST 不可用（退回朴素做法）
@@ -632,6 +818,9 @@ def check_url(
     blocked: Iterable[str] = (),
     for_write: bool = False,
     local_access: bool = True,
+    local_file_access: bool = True,
+    file_allow_any_path: bool = True,
+    file_allowed_dirs: Iterable[str] = (),
 ) -> Tuple[bool, str]:
     """校验一个 URL 是否允许被访问。
 
@@ -644,6 +833,12 @@ def check_url(
             本插件定位是"让 AI 帮你操作浏览器"，本地开发服务器与
             KiraAI 面板都是正常目标；需要收紧时把它设为 False，
             那时本机与内网（含云元数据端点）一律拒绝。
+        local_file_access: 是否允许打开**本机文件**（``file://``）。
+            默认 True，理由同 `local_access`：bot 看不到本地文件，
+            "帮我看看这张图 / 这个 PDF"这类最基本的诉求就不可用。
+        file_allow_any_path: 本地文件是否允许任意路径。关掉后只允许
+            `file_allowed_dirs` 里的目录（realpath 归一，防 ``../`` 穿越）。
+        file_allowed_dirs: 本地文件目录白名单（仅上一项关闭时生效）。
 
     Returns:
         ``(ok, reason)`` —— ``ok`` 为 False 时 ``reason`` 是给用户/日志看的说明。
@@ -654,6 +849,27 @@ def check_url(
     scheme = parse_scheme(url)
     if scheme in BLOCKED_SCHEMES:
         return False, f"不支持的页面类型（{scheme}://），扩展无权访问"
+
+    # ── 本机文件（file://）：单独一条通道 ──────────────────────────────
+    #
+    # ⚠️ 必须在解析 host **之前**分流：`file:///home/u/a.png` 的 hostname
+    #    是空串，走下面那条路会被判成"无法解析域名"，
+    #    报出来的错和真实原因（文件访问没开/路径不在白名单）完全对不上。
+    if scheme in FILE_SCHEMES:
+        if not local_file_access:
+            return False, ("打开本机文件已按配置关闭"
+                           "（「允许打开本机文件」）")
+        _p = file_url_to_path(url)
+        if not _p:
+            return False, f"无法从这条 file URL 解出路径: {url}"
+        _ok, _detail = file_path_allowed(
+            _p, allow_any=file_allow_any_path, allowed_dirs=file_allowed_dirs)
+        if not _ok:
+            return False, _detail
+        # ⚠️ 本地文件**不参与域名黑白名单**（它没有域名）。
+        #    这是有意的：黑名单里写 `*.bank*` 是冲着网页去的，
+        #    用它去匹配 `C:\\bank-report.pdf` 只会误伤。
+        return True, ""
 
     host = parse_host(url)
     if not host:
@@ -719,17 +935,25 @@ def check_url(
 
 def check_write_targets(urls: Iterable[str], allowed: Iterable[str],
                         blocked: Iterable[str],
-                        local_access: bool = True) -> Tuple[bool, str]:
+                        local_access: bool = True,
+                        local_file_access: bool = True,
+                        file_allow_any_path: bool = True,
+                        file_allowed_dirs: Iterable[str] = ()) -> Tuple[bool, str]:
     """批量校验写操作涉及的多个 URL，任一失败即整体拒绝。
 
-    ⚠️ 必须显式收 `local_access` 并传下去。虽然这个函数当前没有被调用，
+    ⚠️ 必须显式收下**每一个**开关并一路传下去。虽然这个函数当前没有被调用，
     但把开关**隐式**留给默认值是个陷阱：将来有人接上它，就会绕过
     用户在配置里设的「允许访问本机 / 内网」——因为 `check_url` 的默认值是
     True，而这里的调用不带参数。开关必须一路传到底，不能有"漏一段"的地方。
+    （同样适用于「允许打开本机文件」这套开关 —— 少传一个，
+      `local_file_access=False` 就在这条路径上静默失效。）
     """
     for url in urls:
         ok, reason = check_url(url, allowed, blocked, for_write=True,
-                               local_access=local_access)
+                               local_access=local_access,
+                               local_file_access=local_file_access,
+                               file_allow_any_path=file_allow_any_path,
+                               file_allowed_dirs=file_allowed_dirs)
         if not ok:
             return False, reason
     return True, ""

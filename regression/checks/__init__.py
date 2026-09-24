@@ -34,6 +34,8 @@ from . import (
     ext_icons,
     failover_notice,
     screenshot_restore,
+    filedoc,
+    filedoc_e2e,
 )
 
 #: 检查**模块**列表（按顺序执行）。
@@ -69,6 +71,8 @@ ALL_CHECKS = [
     ext_icons,           # 扩展图标（尺寸 / 格式 / 体积预算）
     failover_notice,     # 换后端必须被 bot 感知（不许静默回退）
     screenshot_restore,  # 截图·窗口最小化自愈（借窗口一瞬，用完还回去）
+    filedoc,             # 本机文件（file://）能被浏览器打开（扩展 + 无头两条路）
+    filedoc_e2e,         # 打开本机文件（端到端跑一遍 tool_navigate）
 ]
 
 __all__ = ["ALL_CHECKS"]

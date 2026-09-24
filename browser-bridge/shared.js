@@ -174,12 +174,87 @@ export async function resolveTab(tabId) {
 
 const INJECTABLE = /^https?:/i;
 
-export function assertInjectable(tab) {
-  if (!tab.url || !INJECTABLE.test(tab.url)) {
-    // ⚠️ 这条报错是给**模型**看的，必须告诉它"还能怎么办" ——
-    //    原来只说"不允许注入脚本，请先切换到普通网页"，
-    //    模型只能放弃、然后回用户一句"扩展没权限访问"，看着像缺陷。
-    //
+/** 本地文件页（`file://`）。
+ *
+ *  ⚠️ 它和 `chrome://` 那类**不是一回事**：
+ *    · `chrome://` / `edge://` / `devtools://` 是浏览器**硬边界** ——
+ *      `<all_urls>` 也不包含，任何扩展都注入不了，无法可解；
+ *    · `file://` 只受用户的一个开关约束（扩展详情页的
+ *      「允许访问文件网址」）。开关**打开之后**扩展就能注入、能读、能点，
+ *      和普通网页一样。所以这里要给出"去打开它"这种**能照做**的路径，
+ *      而不是甩一句"没有权限"。
+ */
+const FILE_URL = /^file:/i;
+
+/**
+ * 本扩展当前能不能访问本地文件。
+ *
+ * ⚠️ 为什么必须真去问：这是**用户级**开关，只能由用户在
+ *    `chrome://extensions` 里打开，扩展自己改不了、也探测不到别的信号。
+ *    （该 API 文档：`chrome.extension.isAllowedFileSchemeAccess()`，
+ *      Chrome 99+ 返回 Promise。）
+ *
+ * 结果会被缓存（用户中途去打开开关的情况下，最多晚几秒生效 ——
+ * 但**失败不缓存**，见下）。
+ */
+let _fileAccessCache = null;
+
+export async function isFileAccessAllowed() {
+  if (_fileAccessCache !== null) return _fileAccessCache;
+  try {
+    const api = chrome.extension;
+    if (!api || typeof api.isAllowedFileSchemeAccess !== "function") {
+      // 拿不到结论时**按允许处理**：让文件页照常打开，
+      // 真没权限的话注入那一步会报出真实原因（比在这里瞎拦好）。
+      return true;
+    }
+    const v = !!(await api.isAllowedFileSchemeAccess());
+    _fileAccessCache = v;
+    return v;
+  } catch (_) {
+    // ⚠️ 探测本身出错时**不写缓存** —— 否则一次偶发异常会把"没权限"
+    //    永久钉住，用户去打开开关也没用（只能重载扩展）。
+    return true;
+  }
+}
+
+/** 用户去打开那个开关的页面（扩展详情页要用户自己找到本扩展，这里给列表页）。 */
+export const EXTENSIONS_URL = "chrome://extensions/";
+
+/** 让缓存作废（用户刚在扩展详情页关掉开关时，下次调用要重新问）。 */
+export function invalidateFileAccessCache() {
+  _fileAccessCache = null;
+}
+
+/** 给模型看的、**能照做**的文件访问引导。 */
+export function fileAccessHelp(url) {
+  return (
+    `当前页面是本机文件（${url}），而这个扩展**还没被允许访问本地文件**。\n`
+    + `这是浏览器的一个安全开关，扩展自己打不开，需要用户操作一次：\n`
+    + `  1. 浏览器地址栏输入 ${EXTENSIONS_URL}\n`
+    + `  2. 找到「Kira Browser Bridge」→ 点「详情」\n`
+    + `  3. 打开「允许访问文件网址 / Allow access to file URLs」\n`
+    + `（开一次就长期有效，之后本机图片 / PDF / 文本 / 视频都能直接打开。）\n`
+    + `另一个办法：不用你的浏览器，改用插件自带的无头浏览器 —— `
+    + `让 AI 调 browser_backend(action="use", use="headless")，`
+    + `那条路没有这个开关的限制。`
+  );
+}
+
+/**
+ * 页面能不能被扩展注入脚本。**异步**（要真去问文件访问开关）。
+ *
+ * ⚠️ 报错是给**模型**看的，必须告诉它"还能怎么办" ——
+ *    原来只说"不允许注入脚本，请先切换到普通网页"，
+ *    模型只能放弃、然后回用户一句"扩展没权限访问"，看着像缺陷。
+ */
+export async function assertInjectable(tab) {
+  const url = (tab && tab.url) || "";
+  if (FILE_URL.test(url)) {
+    if (await isFileAccessAllowed()) return;
+    throw new Error(fileAccessHelp(url));
+  }
+  if (!url || !INJECTABLE.test(url)) {
     //    真实情况：`chrome://` / `edge://` 这类**浏览器内部页**是
     //    **硬边界** —— `<all_urls>` 也不包含它们，任何扩展都注入不了，
     //    这不是权限没开、也没法开。
@@ -191,7 +266,7 @@ export function assertInjectable(tab) {
     //      ② **要数据不要页面**：书签数据走 `chrome.bookmarks`（数据接口，
     //         不碰页面），用 browser_interact 的 action="bookmarks"。
     throw new Error(
-      `当前页面（${tab.url || "未知"}）是**浏览器内部页**，`
+      `当前页面（${url || "未知"}）是**浏览器内部页**，`
       + `任何扩展都无法在里面注入脚本（浏览器的硬边界，不是权限没开）。\n`
       + `可以这样做：\n`
       + `  · 想**看这个页面**：用 browser_screenshot —— 它对内部页照常有效`
@@ -208,7 +283,7 @@ export function assertInjectable(tab) {
  * 就可能没有监听者。这里用 ping 探测一次，失败则手动补注入。
  */
 export async function callContent(tab, action, payload = {}, timeout = 15000) {
-  assertInjectable(tab);
+  await assertInjectable(tab);
 
   const send = (a, p) => chrome.tabs.sendMessage(tab.id, { action: a, ...p });
 

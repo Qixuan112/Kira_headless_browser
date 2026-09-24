@@ -497,10 +497,18 @@ def run(r) -> None:
     ok, _ = sec.check_url("https://example.com/x", allowed=["*.github.com"])
     r.ok("C3 读操作不受白名单限制", ok)
     # 特殊 scheme
+    #
+    # ⚠️ `file://` **不再**属于"特殊 scheme 一律拒"那一类 —— 见下面 C4 的说明。
+    #    它改由独立的 `local_file_access` 开关管辖（默认开）。
     ok, _ = sec.check_url("file:///etc/passwd")
-    r.ok("C4 file:// 被拒", not ok)
+    r.ok("C4 默认允许打开本机文件（bot 看不到本地图片/PDF 就没法干活）",
+         ok, "file:// 应默认放行；要收紧用「允许打开本机文件」开关")
+    ok, _ = sec.check_url("file:///etc/passwd", local_file_access=False)
+    r.ok("C4b 关掉「允许打开本机文件」后 file:// 被拒", not ok)
     ok, _ = sec.check_url("javascript:alert(1)")
     r.ok("C5 javascript: 被拒", not ok)
+    ok, _ = sec.check_url("chrome://settings")
+    r.ok("C5b 浏览器内部页被拒（硬边界，任何扩展都进不去）", not ok)
     # ── 本机 / 内网：默认放行，可配置收紧 ──────────────────────────
     #
     # ⚠️ 这里过去断言"本机一律被拒"。现在**默认是允许的** ——

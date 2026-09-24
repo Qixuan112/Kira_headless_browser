@@ -135,7 +135,77 @@
 
 ---
 
-## 2. 允许上传任意路径的本机文件（默认开启）
+## 2. 允许浏览器打开本机文件（`file://`，默认开启）
+
+**代码位置**：`security.py` 的 `check_url(..., local_file_access=True)`
+**配置项**：`local_file_access`（默认 `true`）、`file_allow_any_path`（默认 `true`）、
+`file_allowed_dirs`
+
+### 为什么单独一条通道，而不是塞进 `BLOCKED_SCHEMES`
+
+`file` 曾经被硬编码在 `BLOCKED_SCHEMES` 里，注释写的理由是
+"扩展也拿不到权限"。**那句话只对了一半**：
+
+* 扩展**默认**确实读不了本地文件 —— 但用户在扩展详情页打开
+  「允许访问文件网址」之后就能了（`chrome.extension.isAllowedFileSchemeAccess()`
+  就是查这个开关）；
+* **无头浏览器**（浏览器自己启动的那个）从来没有这条限制。
+
+于是那一条硬编码把**两个后端同时**钉死。用户报的现象是：
+
+```
+[tool_use] browser_navigate args: {'url': 'file:///C:/Users/.../xxx.jpg'}
+[tool_use] tool_result: 不支持的页面类型（file://），扩展无权访问
+```
+
+而这属于"AI 最自然的用法之一直接不可用"：
+**"帮我看看这张图 / 这份 PDF / 这个视频"**。它和本机地址那条
+（第 1 节）是同一个产品取向：本插件的定位就是让 AI 操作浏览器，
+本机文件是正常的工作目标。
+
+### 它和「允许访问本机 / 内网」是两个正交的开关
+
+这一条容易搞混，所以要写清楚：
+
+| 开关 | 管什么 | 典型目标 |
+|---|---|---|
+| `local_access` | localhost / 内网上的**网页服务** | `http://localhost:3000`、KiraAI 面板 |
+| `local_file_access` | 磁盘上的**文件**（`file://`） | `/home/me/截图.png`、`C:\...\报告.pdf` |
+
+只想要"别让 AI 碰我的磁盘"的用户关后者，不影响本地开发服务器；
+只想要"别让它碰内网"的用户关前者，本地图片照常能看。
+**任何一方都不该顺带改掉另一方的行为** —— 回归套件里有断言钉住这条正交性。
+
+### 收紧到什么程度
+
+* `local_file_access=false` → `file://` 一律拒绝；
+* `file_allow_any_path=false` → 只允许 `file_allowed_dirs` 里的目录
+  （`os.path.realpath` 归一后判 `commonpath`，**防 `../` 穿越**）。
+
+### 残余风险（不假装没有）
+
+开着 `local_access` + `local_file_access` 时，AI 理论上可以把本机
+**任意可读文件**打开在浏览器里，再配合 `browser_screenshot`（截图 + VLM 描述）
+把画面内容读出来 —— 效果等价于"读文件"。这是这套能力的**定义**，
+不是实现缺陷：
+
+* 想限制范围 → `file_allow_any_path=false` + `file_allowed_dirs`；
+* 想完全关掉 → `local_file_access=false`；
+* 想连"操作浏览器"都限制 → `read_only=true`。
+
+### 两条**有意**的拒绝（不是漏配）
+
+1. **网络共享**（`file://server/share/a.png`）一律拒绝。
+   它会把请求发到局域网主机上，而这两组开关说的都是**本机**。
+   留着它等于顺手开了个 SMB 探测口。
+2. **浏览器内部页**（`chrome://` / `edge://` / `devtools://` / `about:`）
+   仍然拒绝。这是浏览器的**硬边界** —— `<all_urls>` 也不包含它们，
+   任何扩展都注入不了，不是权限没开、也没法开。放行 `file` **完全没有**
+   顺带放过它们（回归套件 A5 专门盯这条）。
+
+---
+
+## 3. 允许上传任意路径的本机文件（默认开启）
 
 **配置项**：`upload_allow_any_path`（默认 `true`）
 
@@ -143,9 +213,13 @@
 限制到几个固定目录会让它经常不可用。想收紧就关掉，
 或用 `upload_allowed_dirs` 指定允许的目录。
 
+> 📌 与第 2 节那组开关是同一个取向，但**用途不同**：
+> 这里管的是"把文件**送出去**"（塞进页面的上传框），
+> 第 2 节管的是"把文件**打开来看**"。两者可以分别收紧。
+
 ---
 
-## 3. 令牌放在 WebSocket 的 query string 里
+## 4. 令牌放在 WebSocket 的 query string 里
 
 **代码位置**：`browser-bridge/protocol.js` 的 `buildWsUrl()`
 
@@ -163,7 +237,7 @@ URL 可能被日志/历史记录带到别处。
 
 ---
 
-## 4. 无头后端自己拉起的浏览器带 `--disable-extensions`
+## 5. 无头后端自己拉起的浏览器带 `--disable-extensions`
 
 **看起来矛盾**：文档里有"扩展"，启动参数却写 `--disable-extensions`。
 
@@ -174,7 +248,7 @@ URL 可能被日志/历史记录带到别处。
 
 ---
 
-## 5. 扩展申请**全站** host 权限（`<all_urls>`）
+## 6. 扩展申请**全站** host 权限（`<all_urls>`）
 
 **自动审查会报**：`host_permissions` 里有 `<all_urls>`，
 应该改成 `optional_host_permissions` + 逐站 `chrome.permissions.request()`。
@@ -207,7 +281,7 @@ URL 可能被日志/历史记录带到别处。
 
 ---
 
-## 6. 本机地址的检测是"尽量周全"，不是"完备"
+## 7. 本机地址的检测是"尽量周全"，不是"完备"
 
 `is_local_host()` 归一化了很多浏览器能识别的等价写法，但
 **"什么样的字符串会被浏览器解析成本机地址"这件事本身没有规范清单**。
@@ -221,7 +295,7 @@ URL 可能被日志/历史记录带到别处。
 
 ---
 
-## 7. 已知的、未解决的局限（不假装完备）
+## 8. 已知的、未解决的局限（不假装完备）
 
 - **DNS rebinding（TOCTOU）**：`resolved_url_is_internal()` 在**校验时**
   解析一次域名，但校验与实际连接之间有时间窗，攻击者可以让 DNS

@@ -87,11 +87,20 @@ def run(r) -> None:
          f"问题={_bad5 or '无'}")
 
     # ── S6 书签能力与权限 ───────────────────────────────────────────────
+    # ⚠️ `src_safe` 在文件缺失时返回空串 —— `json.loads("")` 会抛
+    #    JSONDecodeError，**整段检查就此中断**（后面的用例一条都不跑，
+    #    报告上只剩一句笼统的"未抛异常"）。删文件矩阵会把这个抓出来。
+    #    所以解析必须兜住，让检查**跑完**并把它自己的 FAIL 记清楚。
     import json as _json
-    _mf = _json.loads(src_safe("browser-bridge/manifest.json"))
+    try:
+        _mf = _json.loads(src_safe("browser-bridge/manifest.json"))
+    except _json.JSONDecodeError:
+        # 只吞解析错误：权限/编码错误由 src_safe 有意抛出，兜在这里
+        # 会被伪装成"manifest 无效"，排查方向就错了。
+        _mf = {}
     _bad6 = []
     if "bookmarks" not in (_mf.get("permissions") or []):
-        _bad6.append("manifest 没申请 bookmarks 权限")
+        _bad6.append("manifest 没申请 bookmarks 权限（或 manifest 缺失/不是合法 JSON）")
     if "async function bookmarks" not in src_safe("browser-bridge/capabilities.js"):
         _bad6.append("capabilities.js 里没有 bookmarks 实现")
     if '"bookmarks"' not in src_safe("main.py"):
