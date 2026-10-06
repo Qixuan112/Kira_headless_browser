@@ -17,9 +17,11 @@ import {
   PROTOCOL_VERSION, MSG, CMD, EVT,
   buildWsUrl, KEEPALIVE_ALARM, KEEPALIVE_PERIOD_MINUTES, RECONNECT_DELAYS, STORE,
   DEFAULT_CONFIRM_TIMEOUT_MS, PAIR_PATH, CANDIDATE_PORTS, READ_COMMANDS,
+  normalizeHost, instanceKey,
 } from "./protocol.js";
 import { execJs, upload, uploadChunk, uploadFinish, uploadAbort,
-         downloadViaSession, cookieGet, cookieSet, bookmarks, historySearch, clipboardOp } from "./capabilities.js";
+         downloadViaSession, cookieGet, cookieSet, bookmarks, historySearch, clipboardOp,
+         cdp, screenshotViaCdp } from "./capabilities.js";
 import {
   state, links, activity, otherWriterFor,
   sendRaw, sendResult, sendEvent, sendChunk,
@@ -92,14 +94,36 @@ export async function getConfig() {
   };
 }
 
-/** 把一个实例写进列表（按 host:port 去重，已存在就更新令牌与标签）。 */
+/** 把一个实例写进列表（按**归一化** host:port 去重，已存在就更新令牌与标签）。
+ *
+ *  ⚠️ 归一化是去重的前提：`localhost:5267` 与 `127.0.0.1:5267` 是同一台
+ *     服务器 —— 各存一条的话扩展会**两条都连**，服务端只认一条 → 互踢风暴。
+ *  ⚠️ 再加一层**身份合并**：token 相同（同一枚接入令牌 = 同一实例换了个
+ *     地址写法）或 data_dir 相同（同一个 KiraAI 数据目录）→ 合并成一条，
+ *     不留双胞胎。
+ */
 export async function upsertInstance(inst) {
   const cfg = await getConfig();
-  const key = (x) => `${x.host || "127.0.0.1"}:${Number(x.port)}`;
-  const list = cfg.instances.filter((x) => key(x) !== key(inst));
-  list.push(Object.assign({ host: "127.0.0.1", label: "" }, inst,
-                          { port: Number(inst.port) }));
+  const norm = Object.assign({ host: "127.0.0.1", label: "" }, inst || {}, {
+    host: normalizeHost((inst && inst.host) || "127.0.0.1"),
+    port: Number((inst && inst.port) || 5267),
+  });
+  const nkey = instanceKey(norm);
+  const list = cfg.instances.filter((x) => {
+    if (instanceKey(x) === nkey) return false;                    // 同地址：更新
+    if (norm.token && x.token && x.token === norm.token) return false;  // 同令牌
+    if (norm.data_dir && x.data_dir && x.data_dir === norm.data_dir) return false;
+    return true;
+  });
+  list.push(norm);
   await chrome.storage.local.set({ [STORE.INSTANCES]: list });
+  // 连接表里的旧 key（未归一化时代留下的）也要顺手收掉，否则会连两条
+  for (const [k, l] of Array.from(links.entries())) {
+    if (k !== nkey && instanceKey(l.inst) === nkey) {
+      try { l.close("merged into normalized instance"); } catch (_) {}
+      links.delete(k);
+    }
+  }
   return list;
 }
 
@@ -149,6 +173,10 @@ async function applyPair(hit) {
   //    新实例会被**静默丢弃**：界面看着像成功了，实际什么都没变。
   await upsertInstance({
     host, port, token: hit.token, label: hit.label || "",
+    // ⚠️ instance/data_dir 是**身份去重**的依据：同一台 KiraAI 用
+    //    localhost 与 127.0.0.1 两种写法各配一次时，靠它俩合并成一条
+    //    （否则会存成双胞胎、两条连接互踢）。
+    instance: hit.instance || "", data_dir: hit.data_dir || "",
   });
   // 旧键同步写一份：万一用户回滚到老版本还能用（且此时列表已是数组，
   // migration 不会再拿旧键去覆盖它）。
@@ -272,11 +300,45 @@ chrome.storage.local.get([STORE.STALE_RECONNECTS])
   .then((s) => { staleStat.count = Math.max(0, Number(s[STORE.STALE_RECONNECTS]) || 0); })
   .catch(() => {});
 
+//: 连接稳定存活多久才把重连退避清零（毫秒）。
+//: 为什么不是 onopen 就清零：互踢乒乓里每次都能完成 TCP 连接（onopen 必触发），
+//: 一清零退避就永远停在 1 秒档 —— 风暴永不减速。
+const STABLE_RESET_MS = 30000;
+
+//: 被服务端以 4001（"另一处连接顶替了你"）踢下后的退让时长。
+//: 被顶替 = 对面正在服务，立刻反踢回去就是互踢。先让对方一阵子；
+//: 连续被踢 ≥3 次说明对面也活着且在抢 → 退到 5 分钟档，并在弹窗可见。
+const REPLACED_PARK_MS = 30000;
+const REPLACED_PARK_MAX_MS = 5 * 60 * 1000;
+
+/** 本扩展实例的稳定 id（持久化）。服务端用它区分"同一实例重连"与"另一处顶号"。 */
+let _clientIdMem = null;
+export async function getClientId() {
+  if (_clientIdMem) return _clientIdMem;
+  try {
+    const s = await chrome.storage.local.get(STORE.CLIENT_ID);
+    let cid = s[STORE.CLIENT_ID];
+    if (!cid) {
+      cid = (crypto.randomUUID ? crypto.randomUUID()
+                               : String(Date.now()) + "-" + Math.random());
+      await chrome.storage.local.set({ [STORE.CLIENT_ID]: cid });
+    }
+    _clientIdMem = cid;
+    return cid;
+  } catch (_) {
+    // 存储不可用就退成进程级随机 id（本次 SW 生命周期内稳定，聊胜于无）
+    if (!_clientIdMem) _clientIdMem = "sw-" + Math.random().toString(36).slice(2);
+    return _clientIdMem;
+  }
+}
+
 /** 一条到某个 KiraAI 实例的连接。 */
 export class Link {
   constructor(inst) {
     this.inst = Object.assign(
       { host: "127.0.0.1", port: 5267, token: "", label: "" }, inst || {});
+    this.inst.host = normalizeHost(this.inst.host);   // 归一化是铁律（见 protocol.js）
+    this.inst.port = Number(this.inst.port) || 5267;
     this.ws = null;
     this.intentionalClose = false;
     this.reconnectTimer = null;
@@ -286,9 +348,20 @@ export class Link {
     //: 最后一次收到服务端数据的时间（epoch ms）。保活闹钟醒来时用它判断
     //: "看着 OPEN、其实半开"的链路（见 shared.js 的 isLinkStale）。
     this.lastInboundAt = 0;
+    //: 被服务端以 4001（Replaced）踢下后的"退让期"截止时刻（epoch ms）。
+    //: ⚠️ 为什么必须有：被顶替意味着**另一处连接正在服务** —— 立刻重连
+    //:   就会把对方踢掉、对方再踢回来，形成永不停止的互踢乒乓
+    //:   （两个浏览器/重复实例条目时，日志每几秒一轮"主动断开旧连接"）。
+    //:   正确做法是被踢者**退让**：先等一小段，再按退避表探；
+    //:   连续被踢说明对面也还活着 → 退避越拉越长。
+    this.parkUntil = 0;
+    this.replacedStreak = 0;
+    //: 稳定存活计时器：连接**稳定**一段时间后才能把重连退避清零
+    //: （onopen 就清零的话，互踢时每次都能"连上"，退避永远停在 1 秒档）。
+    this.stableTimer = null;
   }
 
-  get key() { return `${this.inst.host}:${this.inst.port}`; }
+  get key() { return instanceKey(this.inst); }
   get label() { return this.inst.label || this.key; }
   get open() { return !!this.ws && this.ws.readyState === WebSocket.OPEN; }
 
@@ -318,14 +391,19 @@ export class Link {
     return this.connecting;
   }
 
-  _doConnect() {
+  async _doConnect() {
+    // ⚠️ client_id 要在**建连之前**取好：hello 必须在 onopen 里同步发出
+    //    （服务端只等 HELLO_TIMEOUT 秒，迟到会被当成幽灵连接关掉）。
+    //    若放进 .then() 里异步发，onopen 之后还要多等一拍 storage 读取 ——
+    //    那就是"连接成功却迟迟不自报家门"的幽灵来源之一。
+    const clientId = await getClientId();
     let url;
     try {
       url = buildWsUrl(this.inst.host, this.inst.port, this.inst.token);
     } catch (e) {
       this.lastError = e.message;
       scheduleReconnect(this);
-      return Promise.resolve({ ok: false, error: e.message });
+      return { ok: false, error: e.message };
     }
     console.log("[KiraBridge] 正在连接", this.label,
                 url.replace(/token=.*/, "token=***"));
@@ -337,7 +415,7 @@ export class Link {
     } catch (e) {
       this.lastError = "创建连接失败：" + e.message;
       scheduleReconnect(this);
-      return Promise.resolve({ ok: false, error: this.lastError });
+      return { ok: false, error: this.lastError };
     }
 
     return new Promise((resolve) => {
@@ -360,25 +438,40 @@ export class Link {
       //    否则：disconnect() 关旧 socket → 用户马上重连 →
       //    旧 socket 的 onclose 在新 socket 写入之后才执行，
       //    于是它把**新连接**的引用清成 null，还可能给旧连接起一次重连。
+      // ⚠️⚠️ 发现"我已经不是当前 socket"时必须**把它关掉**，不能只 return ——
+      //    服务端 accept 迟到时这个孤儿 socket 仍会被服务端建立起来，
+      //    但它永远等不到 hello（这里的 onopen 没发），就成了服务端的
+      //    "幽灵连接"（日志里「等待扩展 hello 超时」就是这么来的）。
+      const disown = () => { try { ws.close(); } catch (_) {} };
+
       ws.onopen = () => {
-        if (this.ws !== ws) return;
+        if (this.ws !== ws) { disown(); return; }
         clearTimeout(openTimeout);
-        this.reconnectAttempt = 0;
-        this.lastError = "";
+        // onopen 本身就是链路活动证据，第一时间记下（半开判定的基准）
         this.lastInboundAt = Date.now();
+        // ⚠️ **不要**在这里清零 reconnectAttempt —— 互踢时每次都能"连上"，
+        //    onopen 清零会让指数退避永远停在 1 秒档（风暴永不减速）。
+        //    只有连接**稳定存活**一段时间后才算真成功（见 stableTimer）。
+        clearTimeout(this.stableTimer);
+        this.stableTimer = setTimeout(() => {
+          this.reconnectAttempt = 0;
+          this.replacedStreak = 0;
+        }, STABLE_RESET_MS);
+        this.lastError = "";
         console.log("[KiraBridge] 已连接", this.label);
         this.sendRaw({
           type: MSG.HELLO,
           protocol: PROTOCOL_VERSION,
           extension_version: chrome.runtime.getManifest().version,
           browser: detectBrowser(),
+          client_id: clientId,
         });
         refreshBadgeAndStatus();
         settle({ ok: true, label: this.label });
       };
 
       ws.onmessage = (ev) => {
-        if (this.ws !== ws) return;
+        if (this.ws !== ws) { disown(); return; }
         // 记下"最后一帧是什么时候到的" —— 保活闹钟醒来时会用它判断链路是否半开
         this.lastInboundAt = Date.now();
         handleMessage(ev.data, this)
@@ -386,20 +479,40 @@ export class Link {
       };
 
       ws.onerror = () => {
-        if (this.ws !== ws) return;
+        if (this.ws !== ws) { disown(); return; }
         // onerror 后必然跟 onclose，这里不重连，避免双触发
         this.lastError = "连接出错，请确认 KiraAI 正在运行";
       };
 
       ws.onclose = (ev) => {
         clearTimeout(openTimeout);
-        if (this.ws !== ws) { settle({ ok: false, error: "连接已被替换" }); return; }
+        clearTimeout(this.stableTimer);
+        if (this.ws !== ws) { disown(); settle({ ok: false, error: "连接已被替换" }); return; }
         console.log("[KiraBridge] 连接关闭", this.label, ev.code, ev.reason);
         this.ws = null;
         if (!this.lastError) this.lastError = `连接已断开 (${ev.code})`;
         refreshBadgeAndStatus();
         settle({ ok: false, error: this.lastError });
-        if (!this.intentionalClose) scheduleReconnect(this);
+        if (this.intentionalClose) return;
+        // ⚠️ **认 4001**：服务端用它表示"另一处连接顶替了你"。
+        //    立刻重连 = 把对方踢掉、对方再踢回来 —— 永不停止的互踢乒乓。
+        //    被顶替者必须**退让**：先停一段（连续被踢越停越久），再按退避表探。
+        if (ev.code === 4001) {
+          this.replacedStreak = (this.replacedStreak || 0) + 1;
+          const parkMs = this.replacedStreak >= 3
+            ? REPLACED_PARK_MAX_MS
+            : REPLACED_PARK_MS;
+          this.parkUntil = Date.now() + parkMs;
+          this.lastError = "连接被另一处顶替（可能有第二个浏览器/重复实例连着"
+                         + "同一个 KiraAI），已暂缓重连";
+          console.warn("[KiraBridge]", this.label,
+                       `被顶替（4001），${Math.round(parkMs / 1000)}s 后再探`
+                       + `（连续第 ${this.replacedStreak} 次）`);
+          scheduleReconnect(this);
+          return;
+        }
+        this.replacedStreak = 0;
+        scheduleReconnect(this);
       };
     });
   }
@@ -426,13 +539,15 @@ export function getLinks() {
 }
 
 function upsertLink(inst) {
-  const key = `${inst.host || "127.0.0.1"}:${inst.port}`;
+  const key = instanceKey(inst);
   let l = links.get(key);
   if (!l) {
     l = new Link(inst);
     links.set(key, l);
   } else {
     l.inst = Object.assign(l.inst, inst);
+    l.inst.host = normalizeHost(l.inst.host);
+    l.inst.port = Number(l.inst.port) || 5267;
   }
   return l;
 }
@@ -511,9 +626,13 @@ function scheduleReconnect(link) {
   if (link.reconnectTimer) return;
   if (state.userDisconnected) return;
 
-  const delay = RECONNECT_DELAYS[
+  let delay = RECONNECT_DELAYS[
     Math.min(link.reconnectAttempt, RECONNECT_DELAYS.length - 1)];
   link.reconnectAttempt += 1;
+  // ⚠️ 退让期（被 4001 顶替）优先：不能比 parkUntil 更早 ——
+  //    那正是"被踢立刻反踢"的乒乓源头。
+  const parked = Math.max(0, (link.parkUntil || 0) - Date.now());
+  if (parked > delay) delay = parked;
   console.log(`[KiraBridge] ${link.label} ${delay}ms 后重连（第 ${link.reconnectAttempt} 次）`);
   link.reconnectTimer = setTimeout(async () => {
     link.reconnectTimer = null;
@@ -596,7 +715,12 @@ export async function ensureAlive() {
   for (const l of links.values()) {
     if (!l.ws || l.ws.readyState === WebSocket.CLOSED
         || l.ws.readyState === WebSocket.CLOSING) {
-      l.reconnectAttempt = 0;
+      // ⚠️ 两条都不能做：
+      //    · **不要清零 reconnectAttempt** —— 每 30s 的闹钟一清零，
+      //      指数退避就名存实亡（"服务端不在"时会永远高频重试）；
+      //    · **不要越过退让期**（被 4001 顶替后的 parkUntil）——
+      //      那正是互踢乒乓的另一半。
+      if ((l.parkUntil || 0) > Date.now()) continue;
       await l.connect();
       continue;
     }
@@ -861,6 +985,7 @@ async function execute(name, params) {
     case CMD.BOOKMARKS:    return await bookmarks(params);
     case CMD.HISTORY:      return await historySearch(params);
     case CMD.CLIPBOARD:    return await clipboardOp(params);
+    case CMD.CDP:          return await cdp(params);
     case CMD.DEBUG:        return await debugInfo(params);
     default:
       throw new Error(`未知命令：${name}`);
@@ -939,6 +1064,17 @@ async function waitFor(params) {
 
 async function screenshot(params) {
   const tab = await resolveTab(params.tab_id);
+
+  // ── 整页 / 元素截图：走 CDP（captureVisibleTab 只有可视区）────────────
+  //  CDP 的 captureBeyondViewport 对**后台标签**也有效，
+  //  所以这条路不需要"目标必须是活动标签"那道检查。
+  if (params.full_page || params.selector) {
+    return await screenshotViaCdp(tab, {
+      fullPage: !!params.full_page,
+      selector: params.selector || "",
+    });
+  }
+
   // ⚠️ captureVisibleTab 截的是**该窗口当前活动标签**，而我们可能被要求
   //    截一张后台标签。那样会把「别的标签的内容」当成目标标签的截图返回，
   //    既是信息泄露，也让 AI 拿到错的画面。
@@ -946,7 +1082,8 @@ async function screenshot(params) {
   if (!tab.active) {
     throw new Error(
       `标签页「${tab.title || tab.id}」不在前台，无法截图（截图只能截当前活动标签）。` +
-      `请先用 activate_tab 切过去，或改为对当前活动标签截图。`
+      `请先用 activate_tab 切过去，或改为对当前活动标签截图；` +
+      `也可以用 full_page 走 CDP 截后台标签。`
     );
   }
   const image = await captureVisibleWithRestore(
@@ -1298,8 +1435,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         //    面板每次加载（含 10 分钟一次的令牌轮询）都会推一遍 ——
         //    若无条件 `setUserDisconnected(false)` + `connect()`，
         //    用户手动点的「断开」会被每 10 分钟**自动撤销**一次。
+        //
+        // ⚠️⚠️ 这里的比较对象必须是**实例列表里匹配的那一条**。
+        //    曾经写成 `before.token !== p.token` —— 而 `getConfig()` 的返回
+        //    只有 `{instances, autoConnect}`，根本没有 `.token` / `.port`，
+        //    于是 `undefined !== p.token` **恒为 true**，"没变就别动"的保护
+        //    整个失效：每次打开面板都会把用户手动点的「断开」自动撤销。
         const before = await getConfig();
-        const changed = before.token !== p.token || Number(before.port) !== Number(p.port);
+        const pkey = instanceKey(p);
+        const existing = (before.instances || []).find(
+          (x) => instanceKey(x) === pkey);
+        const changed = !existing || existing.token !== p.token;
         const saved = await applyPair(p);
         if (!changed) {
           // ⚠️⚠️ **但"信息没变"不等于"什么都不用做"**。
@@ -1309,7 +1455,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           //    正确规则：
           //      · 用户手动点过「断开」→ 尊重他，别动（保持原意）
           //      · 否则，这条实例**现在没连上** → 连它
-          const live = links.get(`${p.host}:${p.port}`);
+          const live = links.get(pkey);
           if (live && live.open) {
             sendResponse({ ok: true, single: saved, unchanged: true });
             break;

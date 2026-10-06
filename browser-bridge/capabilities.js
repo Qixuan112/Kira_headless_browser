@@ -432,6 +432,121 @@ async function downloadViaSession(params, cmdId, link) {
 // sendChunk 由 shared.js 提供（这里不能再声明一次：
 // 与 import 的同名绑定冲突会让整个模块语法错误）
 
+// ─── 4.5 CDP 透传（chrome.debugger）──────────────────────────────────────
+//
+//  为什么需要：content.js 的键鼠是 DOM 合成事件（isTrusted=false）——
+//  对检测可信输入的站点天然无效；captureVisibleTab 又只能截可视区。
+//  chrome.debugger 走的是浏览器协议层（Chrome DevTools Protocol）：
+//  trusted 输入（Input.dispatchKeyEvent / dispatchMouseEvent）、
+//  整页截图（Page.captureScreenshot + captureBeyondViewport）、
+//  网络/性能数据……全都够得着。
+//
+//  使用纪律（两条都是硬约束）：
+//    1. **用时附着、用完立即 detach** —— 附着期间页面顶部有「正在调试」
+//       提示条（浏览器硬行为，消不掉），所以附着窗口压到一条命令的长度。
+//    2. 一个标签同一时刻只能附着一个调试客户端 —— DevTools 开着、或另一个
+//       KiraAI 实例正在用 CDP 时 attach 会失败，如实报错（不排队、不抢）。
+
+/** 常见的 attach 失败 → 翻译成能照做的话。 */
+function _cdpAttachError(e, tab) {
+  const m = String((e && e.message) || e || "");
+  if (/another debugger|already attached/i.test(m)) {
+    return new Error(
+      "这个标签页上已经有调试会话（DevTools 正开着，或另一个 KiraAI 实例"
+      + "正在执行 CDP 命令）。关掉那一边再试。");
+  }
+  if (/Cannot access|chrome:\/\/|edge:\/\/|about:|web store/i.test(m)) {
+    return new Error(
+      `当前页面（${(tab && tab.url) || "未知"}）是浏览器内部页/商店页，`
+      + `调试器无法附着（浏览器的硬边界）。`);
+  }
+  return e instanceof Error ? e : new Error(m);
+}
+
+/**
+ * 执行一条 CDP 命令。
+ * @param {object} params - method（如 "Page.captureScreenshot"）/
+ *                          params（命令参数对象）/ tab_id
+ */
+async function cdp(params = {}) {
+  const method = String(params.method || "").trim();
+  if (!method) throw new Error("缺少 method（如 Page.captureScreenshot）");
+  // ⚠️ 只放行"命令"，不放行 evaluate-on-页面之外的任意通道是做不到的 ——
+  //    CDP 本身就是全能力协议（Runtime.evaluate 等价 exec_js）。
+  //    权限等级与 exec_js 同级：都是写操作，走同一套只读/白名单/确认约束，
+  //    这里不另设门槛（另设 = 同样的能力两个标准，反而不可预期）。
+  const tab = await resolveTab(params.tab_id);
+  const target = { tabId: tab.id };
+  try {
+    await chrome.debugger.attach(target, "1.3");
+  } catch (e) {
+    throw _cdpAttachError(e, tab);
+  }
+  try {
+    const result = await chrome.debugger.sendCommand(
+      target, method, (params.params && typeof params.params === "object")
+        ? params.params : {});
+    return { url: tab.url, title: tab.title || "", method, result };
+  } finally {
+    // detach 是义务：黄条只闪命令执行的这一瞬
+    try { await chrome.debugger.detach(target); } catch (_) {}
+  }
+}
+
+/**
+ * CDP 截图：整页（captureBeyondViewport）或指定元素（clip）。
+ * 返回与可视区截图同形状的 { url, title, image: dataURL }。
+ *
+ * ⚠️ 整页高度要设上限：无限滚动页（微博/推时间线）的"整页"可以是
+ *    几百万像素高，不截断会直接把浏览器渲染进程拉爆。
+ */
+async function screenshotViaCdp(tab, { fullPage = false, selector = "" } = {}) {
+  const target = { tabId: tab.id };
+  const MAX_H = 16000;                       // 整页高度上限（CSS px）
+  try {
+    await chrome.debugger.attach(target, "1.3");
+  } catch (e) {
+    throw _cdpAttachError(e, tab);
+  }
+  try {
+    let clip;
+    if (selector) {
+      const doc = await chrome.debugger.sendCommand(
+        target, "DOM.getDocument", { depth: 1 });
+      const node = await chrome.debugger.sendCommand(
+        target, "DOM.querySelector",
+        { nodeId: doc.root.nodeId, selector });
+      if (!node || !node.nodeId) throw new Error(`未找到元素: ${selector}`);
+      const quads = await chrome.debugger.sendCommand(
+        target, "DOM.getContentQuads", { nodeId: node.nodeId });
+      const q = (quads.quads || [])[0];
+      if (!q) throw new Error(`元素 ${selector} 没有可见的渲染框（可能被隐藏）`);
+      const xs = [q[0], q[2], q[4], q[6]], ys = [q[1], q[3], q[5], q[7]];
+      const x = Math.min(...xs), y = Math.min(...ys);
+      clip = { x, y,
+               width: Math.max(...xs) - x,
+               height: Math.min(Math.max(...ys) - y, MAX_H), scale: 1 };
+    } else if (fullPage) {
+      const m = await chrome.debugger.sendCommand(target, "Page.getLayoutMetrics", {});
+      const size = m.cssContentSize || m.contentSize || {};
+      const w = Math.ceil(size.width || 0), h = Math.ceil(size.height || 0);
+      if (w > 0 && h > 0) {
+        clip = { x: 0, y: 0, width: w, height: Math.min(h, MAX_H), scale: 1 };
+      }
+    }
+    const shot = await chrome.debugger.sendCommand(target, "Page.captureScreenshot", {
+      format: "png",
+      captureBeyondViewport: !!(fullPage || selector),
+      ...(clip ? { clip } : {}),
+    });
+    return { url: tab.url, title: tab.title || "",
+             image: "data:image/png;base64," + shot.data,
+             full_page: !!fullPage, truncated: !!(clip && clip.height === MAX_H) };
+  } finally {
+    try { await chrome.debugger.detach(target); } catch (_) {}
+  }
+}
+
 // ─── 4. Cookie 导出 / 导入（打通两个后端的登录态）──────────────────────
 
 async function cookieGet(params) {
@@ -624,4 +739,5 @@ async function clipboardOp(params = {}) {
 }
 
 export { execJs, upload, uploadChunk, uploadFinish, uploadAbort,
-         downloadViaSession, cookieGet, cookieSet, ensureUserScripts, bookmarks, historySearch, clipboardOp };
+         downloadViaSession, cookieGet, cookieSet, ensureUserScripts, bookmarks, historySearch, clipboardOp,
+         cdp, screenshotViaCdp };

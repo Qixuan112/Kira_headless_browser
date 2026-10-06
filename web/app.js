@@ -377,7 +377,7 @@ async function loadToken(force) {
     setTokValue(t);
     _lastErr = "";
     renderToken();                       // 默认遮住，点了眼睛才显示
-    pairWithExtension(t);
+    pairWithExtension(t, r);             // r 里带 instance/data_dir（/token 响应）
   } catch (e) {
     if (seq !== _tokenSeq) return;
     const why = String((e && e.message) || e);
@@ -400,7 +400,7 @@ async function regen() {
     if (!r || r.ok === false) throw new Error((r && r.error) || "失败");
     setTokValue(r.token || "");
     renderToken();
-    pairWithExtension(r.token || "");
+    pairWithExtension(r.token || "", r);  // r 里带 instance/data_dir
     toast(r.changed ? "已生成新令牌（旧令牌已作废）" : "令牌未变化");
   } catch (e) {
     toast("生成失败：" + (e.message || e));
@@ -421,13 +421,18 @@ function copyToken() {
    ⚠️ 这条是"打开面板即配对"的关键，别动：
       pairing-page.js 内容脚本只在本机/私网页面上跑，
       收到这个 postMessage 后转给扩展，扩展据此记住 host/port/token。   */
-function pairWithExtension(token) {
+function pairWithExtension(token, meta) {
   try {
     window.postMessage({
       __kiraPair: true,
       host: location.hostname || "127.0.0.1",
       port: Number(location.port) || 80,
       token: token || "",
+      // ⚠️ 实例标识必须一起推过去：扩展靠 data_dir 做**身份级去重** ——
+      //    没有它，localhost 与 127.0.0.1 两种写法会存成两条实例、
+      //    两条连接互踢（重连风暴的导火索）。
+      instance: (meta && meta.instance) || "",
+      data_dir: (meta && meta.data_dir) || "",
       origin: location.origin,
     }, location.origin);
   } catch (_) { /* 推不出去就算了，用户可以手填 */ }

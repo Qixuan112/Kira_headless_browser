@@ -92,6 +92,10 @@ CMD_MUTE_TAB = "mute_tab"
 CMD_PIN_TAB = "pin_tab"
 CMD_HISTORY = "history"
 CMD_CLIPBOARD = "clipboard"
+#: CDP 透传（Chrome DevTools Protocol）：扩展侧走 chrome.debugger，
+#: 无头侧走 Playwright 的 CDP session。提供 trusted 输入、整页截图等
+#: DOM 合成事件做不到的能力。权限等级与 exec_js 同级（都是"写"）。
+CMD_CDP = "cdp"
 
 #: 写操作集合 —— 只读模式下会被拦截，且需要过域名白名单
 WRITE_COMMANDS = frozenset({
@@ -117,8 +121,10 @@ WRITE_COMMANDS = frozenset({
     CMD_MOUSE_UP,
     CMD_MOUSE_WHEEL,
     CMD_MOUSE_DRAG,
-    CMD_MOUSE_MOVE,
     CMD_COOKIE_SET,
+    # CDP 是"浏览器协议直通"，能驱动输入/截图/网络 —— 与 exec_js 同级，
+    # 属于写操作（只读模式拦截、白名单约束、开了确认就要确认）。
+    CMD_CDP,
 })
 
 #: 只读但需要单列（不属于写操作）
@@ -135,6 +141,7 @@ ALL_COMMANDS = frozenset({
     CMD_MOUSE_MOVE, CMD_MOUSE_CLICK, CMD_MOUSE_DOWN, CMD_MOUSE_UP,
     CMD_MOUSE_WHEEL, CMD_MOUSE_DRAG, CMD_LIST_FILES, CMD_DEBUG,
     CMD_BOOKMARKS, CMD_MUTE_TAB, CMD_PIN_TAB, CMD_HISTORY, CMD_CLIPBOARD,
+    CMD_CDP,
 })
 
 # ─── 事件名（扩展 → 插件） ───────────────────────────────────────────────────
@@ -191,6 +198,15 @@ class HelloPayload:
     extension_version: str = "unknown"
     browser: str = "unknown"
     protocol: int = PROTOCOL_VERSION
+    #: 扩展实例的稳定身份（扩展侧持久化的随机 id）。
+    #:
+    #: ⚠️ 用途只有一个：区分「同一个扩展重连」（MV3 Service Worker 被回收
+    #:    后唤醒，几十秒一次，是**正常现象**，日志一笔带过）和
+    #:    「**另一处**连接顶号」（第二台浏览器 / 重复的实例条目在互踢，
+    #:    那必须 WARNING 让用户看见）。没有这个字段时两种替换长得一模一样，
+    #:    只能靠猜。
+    #:    可选：旧版扩展不上报 → 空串，此时一律按"可能是另一处"处理。
+    client_id: str = ""
 
     @classmethod
     def from_wire(cls, raw: dict) -> "HelloPayload":
@@ -198,4 +214,5 @@ class HelloPayload:
             extension_version=str(raw.get("extension_version", "unknown")),
             browser=str(raw.get("browser", "unknown")),
             protocol=int(raw.get("protocol", 0) or 0),
+            client_id=str(raw.get("client_id", "") or ""),
         )

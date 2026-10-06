@@ -325,6 +325,14 @@ browser_navigate(url="C:\Users\me\Desktop\报告.pdf")
 
 `script` —— 一段 JavaScript，返回表达式的值。
 
+也可以走 **CDP**（Chrome DevTools Protocol）：传 `cdp_method` +
+`cdp_params`，例如 `cdp_method="Page.captureScreenshot"`、
+`cdp_method="Input.dispatchMouseEvent"`。trusted 键鼠、整页截图、
+网络/性能数据等协议层能力都从这里走。两个后端都支持
+（扩展侧 = chrome.debugger，无头侧 = Playwright CDP session）。
+⚠️ 需要扩展 v1.6.0+；扩展更新时浏览器会因新增的「调试器」权限
+要求你重新启用一次。
+
 ### 📁 `browser_file`
 
 | mode | 说明 |
@@ -368,8 +376,9 @@ browser_navigate(url="C:\Users\me\Desktop\报告.pdf")
 |---|---|---|
 | 读页面 / 提取 / 列表签 | ✅ | ✅ |
 | 跳转 / 点击 / 输入 / 滚动 | ✅ | ✅ |
-| 截图 | ✅ | ✅ |
+| 截图（可视区 / 整页 / 元素） | ✅ | ✅ |
 | 执行 JavaScript | ✅（需开 userScripts 开关） | ✅ |
+| CDP 协议命令（trusted 键鼠等） | ✅（v1.6.0+，chrome.debugger） | ✅（Playwright CDP） |
 | 上传 / 下载 / Cookie / 键鼠 | ✅ | ✅ |
 | 用你现有的登录态 | ✅ 天然就有 | ✅ 靠 `inherit` 复制 |
 
@@ -527,6 +536,86 @@ python -m playwright install chromium
 ## 更新日志
 
 本插件迭代很快，完整历史收在下面（**默认折叠**）。点开对应分组即可。
+
+<details open>
+<summary><b>2.2.x</b> — 重连风暴根治、CDP 远程调试真的来了</summary>
+
+### v2.2.0（2026-10-06）
+
+**修掉了一个会永不停止的「重连风暴」，并把 CDP（Chrome DevTools Protocol）**
+**真正接进了两个后端。**
+
+#### ① 重连风暴根治（日志每几秒一轮「主动断开旧连接」，永不停止）
+
+**现象**：`[browser_bridge]` 每 2~6 秒一轮「已有扩展连接，主动断开旧连接 →
+扩展已连接」，几分钟能刷几百行，还伴随 napcat 等其它服务的超时抖动。
+
+**根因（四个缺陷叠加，缺一不可）**：
+
+1. 服务端 accept 后**先踢旧连接、再等新连接自证（hello）** —— 任何不说
+   hello 的幽灵连接（迟到的孤儿 socket / 探测流量）都能把健康连接顶掉；
+   而且 hello 超时后「仍继续建立连接」，幽灵被扶正。
+2. 扩展被踢（close code 4001）不区分对待，1 秒后照常重连 —— 反踢回去。
+3. 扩展 `onopen` 就清零重连退避 —— 互踢时每次都能"连上"，指数退避永远
+   停在 1 秒档。
+4. 实例去重键是字符串 `host:port` —— `localhost` 与 `127.0.0.1` 是同一台
+   服务器的两种写法（面板推送用 `location.hostname`，自动发现固定
+   127.0.0.1），会被存成两条实例、**两条连接互踢**。两台浏览器/两个
+   Chrome Profile 都装了扩展同理。
+
+**修法（两侧一起）**：
+
+- 服务端**先自证、后仲裁**：新连接必须 5 秒内说过 hello 才有资格踢人；
+  幽灵安静关闭（DEBUG 级，不刷屏）；hello 带持久化 `client_id`，
+  同一实例重连（MV3 唤醒）只记 DEBUG，**另一处顶号**才 WARNING
+  （且 5 分钟窗口内最多一条）。
+- 服务端**世代守卫 + 每会话发送锁 + 发送超时（10s）**：被替换的旧会话
+  立即停收（帧不再串到新连接）；给慢客户端发大截图不再堵住其它会话。
+- 扩展**认 4001 退让**：被顶替后先停 30s（连续被踢升到 5 分钟）再探，
+  不再 1 秒反踢；退避只在**稳定存活 30 秒**后清零；迟到的孤儿 socket
+  立即处死；实例按归一化 host + 令牌 + 数据目录**身份去重**；
+  保活闹钟不再清退避。
+- 顺带修复：`page_pair` 的"接入信息没变就别动"判断曾经**恒为真**
+  （比较的是不存在的字段），用户手动点的「断开」会被打开面板自动撤销 ——
+  现在真的只有变了才动作。
+
+**改完后的正常状态**：一条连接长期安静存在；MV3 回收唤醒时的重连
+几十秒一次、DEBUG 级；面板「连接状态」里能看到幽灵/顶替/自愈的计数，
+不用再翻日志。
+
+#### ② CDP 远程调试（两个后端都可用）
+
+之前**完全没有接线**（manifest 没有 debugger 权限，代码里零调用），
+键鼠全是 DOM 合成事件（`isTrusted=false`），整页截图扩展侧做不到。
+
+现在：
+
+- **`browser_script` 新增 CDP 通道**：传 `cdp_method` + `cdp_params` 即走
+  Chrome DevTools Protocol —— trusted 键鼠（`Input.dispatchMouseEvent` /
+  `dispatchKeyEvent`）、`Page.captureScreenshot`、`Network` / `Performance`
+  数据等全部可用。扩展后端走 `chrome.debugger`，无头后端走 Playwright 的
+  CDP session，**同一个工具、同一个写法**。
+- **整页/元素截图**：`browser_screenshot` 的 `full_page` / `selector`
+  在扩展后端也终于可用了（走 CDP 的 `captureBeyondViewport`，后台标签
+  也能截；整页高度上限 16000px，超出会明确标注截断）。
+- 权限等级与 `exec_js` **同级**：默认直接用；只有你开了「写操作需确认」
+  时才和其它写操作一样弹确认。
+- ⚠️ **扩展更新注意**：本次扩展新增「调试器」权限，浏览器更新扩展时会
+  弹「需要新权限」并**先停用扩展**，点一次重新启用即可。CDP 命令执行时
+  页面顶部会闪一下「正在调试」提示条（命令结束即消失，这是浏览器的
+  硬行为）。
+- ⚠️ 旧版扩展（< v1.6.0）没有 CDP：调用会得到明确的更新指引，
+  不会静默降级成错误的截图。
+
+#### ③ 顺带修复
+
+- 下载同名文件不再静默覆盖（自动加 `(1)` 序号，和浏览器同款）。
+- `terminate()` 不再重复关闭 bridge（语义归位，无行为变化）。
+- manifest 补 `core_version`；心跳循环改用实例参数（测试可压）。
+
+**自检：新增 52 条（桥接仲裁 34 + 契约/CDP 2 + 其余 16），合计 689 全绿。**
+
+</details>
 
 <details>
 <summary><b>2.1.x</b> — 60 个版本　·　最新的一系列：双后端重构、安全加固、以及大量审查修复</summary>

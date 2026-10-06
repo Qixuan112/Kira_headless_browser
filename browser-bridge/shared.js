@@ -406,6 +406,9 @@ export const PRIVILEGED_COMMANDS = new Set([
   //    或模拟鼠标移动（可能触发拖拽类交互）。
   //    这份清单必须与 Python 侧 protocol.py 的 WRITE_COMMANDS 保持同步。
   "activate_tab", "close_tab", "mouse_move",
+  // ⚠️ CDP 是浏览器协议直通（trusted 输入/整页截图/网络层）——
+  //    权限等级与 exec_js 同级，进同一份清单。
+  "cdp",
 ]);
 
 /**
@@ -480,6 +483,12 @@ export function confirmPromptFor(name, params) {
         `AI 想向浏览器写入 ${_len(params.cookies)} 条 cookie`];
     case "mouse_drag":
       return ["鼠标拖拽", `AI 想执行一次鼠标拖拽操作（坐标不在此显示）`];
+    case "cdp":
+      // 方法名不是敏感信息（形如 Page.captureScreenshot），显示出来
+      // 反而能让用户看懂"要干什么"；参数对象不显示（可能含坐标/表达式）。
+      return ["浏览器调试命令",
+        `AI 想通过 Chrome DevTools Protocol 执行：${_short(params.method || "")}\n`
+        + `（这会附着调试器执行一条协议命令，参数不在此显示）`];
     default:
       return [`执行 ${name}`, `AI 想执行浏览器操作：${name}`];
   }

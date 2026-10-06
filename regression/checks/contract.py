@@ -66,6 +66,7 @@ CALLS = {
     "cookie_set": {"cookies": [{"name": "n", "value": "v", "domain": ".a"}]},
     "upload_file": {"selector": "#f"},
     "download": {"url": "https://a/f", "path": ""},
+    "cdp": {"method": "Page.captureScreenshot", "params": {"format": "png"}},
 }
 
 FAKE_TABLE = None   # 延迟构造（需要 protocol 模块）
@@ -155,6 +156,9 @@ def _mk_fake_bridge(P):
 
     class FakeBridge:
         connected = True
+        #: 版本闸门（CDP 需要扩展 >= 1.6.0）要读的握手信息 —— 给一个足够新的
+        _hello = P.HelloPayload(extension_version="99.0.0", browser="Fake",
+                                protocol=P.PROTOCOL_VERSION)
 
         def open_download_sink(self, *a, **k):
             pass
@@ -180,6 +184,10 @@ def _mk_fake_bridge(P):
                 P.CMD_SCREENSHOT: {"url": "https://a/", "title": "t",
                                    "image": "data:image/png;base64,AAAA"},
                 P.CMD_EXEC_JS: {"url": "https://a/", "result": 42},
+                # 与扩展 capabilities.js 的 cdp() 返回同形状（url/title/method/result）
+                P.CMD_CDP: {"url": "https://a/", "title": "t",
+                            "method": "Page.captureScreenshot",
+                            "result": {"data": "AAAA"}},
                 P.CMD_CLOSE_TAB: {"tab_id": 0, "closed": True},
                 P.CMD_ACTIVATE_TAB: {"tab_id": 0, "activated": True},
                 P.CMD_MUTE_TAB: {"tab_id": 0, "muted": True},

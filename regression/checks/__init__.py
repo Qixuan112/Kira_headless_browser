@@ -36,6 +36,7 @@ from . import (
     screenshot_restore,
     filedoc,
     filedoc_e2e,
+    bridge_arbitration,
 )
 
 #: 检查**模块**列表（按顺序执行）。
@@ -73,6 +74,7 @@ ALL_CHECKS = [
     screenshot_restore,  # 截图·窗口最小化自愈（借窗口一瞬，用完还回去）
     filedoc,             # 本机文件（file://）能被浏览器打开（扩展 + 无头两条路）
     filedoc_e2e,         # 打开本机文件（端到端跑一遍 tool_navigate）
+    bridge_arbitration,  # 桥接仲裁（先自证后踢人）与重连纪律（2026-10-06 风暴）
 ]
 
 __all__ = ["ALL_CHECKS"]
