@@ -296,6 +296,26 @@ class FakeContext:
         self._cookies.extend(list(cookies or []))
         return None
 
+    async def new_cdp_session(self, page):
+        """最小 CDP session stub：记录 send 调用，回一个可辨认的结果。"""
+        ctx = self
+
+        class _CDPSession:
+            def __init__(self):
+                self.calls = []
+                self.detached = False
+
+            async def send(self, method, params=None):
+                self.calls.append((method, dict(params or {})))
+                return {"stub": True, "method": method,
+                        "echo": dict(params or {})}
+
+            async def detach(self):
+                self.detached = True
+
+        ctx._last_cdp = _CDPSession()
+        return ctx._last_cdp
+
     async def cookies(self, url=None):
         """返回已存 cookie 的**副本**（外部改动不影响内部状态）。
 

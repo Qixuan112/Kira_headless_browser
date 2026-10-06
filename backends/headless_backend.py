@@ -1711,6 +1711,46 @@ class HeadlessBackend(Backend):
         except Exception as e:
             return OpResult.fail(f"执行失败: {e}", self.name)
 
+    async def cdp(self, method: str, params: Optional[dict] = None,
+                  tab_id=None) -> OpResult:
+        """CDP 透传（Playwright 的 CDP session）。
+
+        无头侧这是**零额外成本**的全能力通道：trusted 输入
+        （Input.dispatch*）、整页截图（Page.captureScreenshot +
+        captureBeyondViewport）、网络/性能数据等。
+        与扩展后端同签名（多一个 tab_id 形参对齐，无头只有一页）。
+        """
+        msg = self._check_tab_id(tab_id)
+        if msg:
+            return OpResult.fail(msg, self.name)
+        method = str(method or "").strip()
+        if not method:
+            return OpResult.fail("缺少 method（如 Page.captureScreenshot）",
+                                 self.name)
+        err = await self._ready()
+        if err:
+            return OpResult.fail(err, self.name)
+        session = None
+        try:
+            async def _do():
+                nonlocal session
+                session = await self._context.new_cdp_session(self._page)
+                return await session.send(method, dict(params or {}))
+            result = await self._op(_do(), f"CDP {method}")
+            return OpResult(data={"result": result, "method": method,
+                                  "url": self._page.url,
+                                  "title": await self._page.title()},
+                            backend=self.name)
+        except Exception as e:
+            return OpResult.fail(f"CDP 命令失败: {e}", self.name)
+        finally:
+            # ⚠️ session 用完要 detach：挂着会一直收事件、占协议资源。
+            if session is not None:
+                try:
+                    await session.detach()
+                except Exception:
+                    pass
+
     async def download(self, url: str, path: str) -> OpResult:
         err = await self._ready()
         if err:

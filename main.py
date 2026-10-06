@@ -970,6 +970,14 @@ class BrowserPlugin(BasePlugin):
             return f"⏱️ 等待超时，元素未出现 {tag}"
         if method == "execute_js":
             return f"✅ JavaScript 执行结果:\n{d.get('result')} {tag}"
+        if method == "cdp":
+            import json as _json
+            # ⚠️ CDP 结果可能是大对象（DOM.getDocument 之类）—— 截断到
+            #    2000 字符，免得一条协议命令把上下文刷爆。
+            _r = _json.dumps(d.get("result"), ensure_ascii=False)
+            if len(_r) > 2000:
+                _r = _r[:2000] + f"…（共 {len(_r)} 字符，已截断）"
+            return f"✅ CDP {d.get('method', '')} 结果:\n{_r} {tag}"
         # ── 以下这些如果落到默认分支，模型就看不到结果了 ──
         # 尤其 cookie_get：导出的是**数据**，必须回传内容，
         # 否则 browser_cookie(action="export") 等于白跑一趟。
@@ -1731,18 +1739,40 @@ class BrowserPlugin(BasePlugin):
 
     @register.tool(
         name="browser_script",
-        description="在页面执行 JavaScript 并返回结果。",
+        description=(
+            "在页面执行脚本/协议命令。两种用法：\n"
+            "① script=JS 表达式（如 document.title）——页面里跑 JavaScript；\n"
+            "② cdp_method + cdp_params —— 走 Chrome DevTools Protocol"
+            "（trusted 键鼠 Input.dispatchMouseEvent/dispatchKeyEvent、"
+            "整页截图 Page.captureScreenshot(captureBeyondViewport=true)、"
+            "网络/性能数据等；扩展与无头两个后端都支持）。"
+            "只做读页面的活优先用 browser_page。"
+        ),
         params={"type": "object", "properties": {
             "script": {"type": "string",
-                       "description": "JS 表达式，如 document.title"}},
-            "required": ["script"]},
+                       "description": "JS 表达式，如 document.title"},
+            "cdp_method": {"type": "string",
+                           "description": "CDP 方法名（如 Page.captureScreenshot）；"
+                                          "传了它就忽略 script"},
+            "cdp_params": {"type": "object",
+                           "description": "CDP 命令的参数对象"},
+            "tab_id": {"type": "integer"}},
+            "required": []},
     )
-    async def tool_script(self, event, script: str, **_):
+    async def tool_script(self, event, script: str = "", cdp_method: str = "",
+                          cdp_params=None, tab_id=None, **_):
         if not self.enabled:
             return "浏览器插件未启用"
-        # ⚠️ 必须标成写操作：执行任意 JS 能干任何事，
-        #    不标的话**只读模式对它完全无效**（也不走域名白名单校验）——
+        # ⚠️ 两条通道都必须标成写操作：执行任意 JS / 任意 CDP 命令能干任何事，
+        #    不标的话**只读模式对它们完全无效**（也不走域名白名单校验）——
         #    那等于只读模式形同虚设。
+        if cdp_method and str(cdp_method).strip():
+            return await self._call("cdp", for_write=True,
+                                    method=str(cdp_method).strip(),
+                                    params=cdp_params if isinstance(cdp_params, dict) else {},
+                                    tab_id=tab_id)
+        if not script:
+            return "需要 script（执行 JS）或 cdp_method（走 CDP）之一"
         return await self._call("execute_js", for_write=True, script=script)
 
     # ── 6. 文件 ──────────────────────────────────────────────────────
@@ -1779,6 +1809,17 @@ class BrowserPlugin(BasePlugin):
         if err:
             return err
         path = os.path.join(self._headless.download_dir, name)
+        # ⚠️ 重名不能**静默覆盖**：两次下载同名文件（`document.pdf` 太常见），
+        #        旧的被新的顶掉，用户还以为两份都在。
+        #        浏览器同款做法：加 (1) (2) 序号。
+        if os.path.exists(path):
+            _stem, _dot, _ext = name.rpartition(".")
+            for _i in range(1, 100):
+                _cand = (f"{_stem}({_i}){_dot}{_ext}" if _dot else f"{name}({_i})")
+                path = os.path.join(self._headless.download_dir, _cand)
+                if not os.path.exists(path):
+                    name = _cand
+                    break
         # 优先让扩展桥去下（带用户的登录态）；失败或没连上再回退无头自己下
         r = await self._call("download", for_write=True, url=url, path=path)
         if isinstance(r, str) and r.startswith("❌") and self._headless is not None:
@@ -2184,7 +2225,11 @@ class BrowserPlugin(BasePlugin):
                 "changed": self._token != before,
                 # 路径里的插件 id 必须与 manifest.plugin_id 一致，
                 # 否则扩展会连到不存在的路由
-                "ws_path": f"/ws/plugin/{PLUGIN_ID}/bridge"}
+                "ws_path": f"/ws/plugin/{PLUGIN_ID}/bridge",
+                # ⚠️ 把实例标识也带回面板 —— 面板推配对（pairWithExtension）时
+                #    一并交给扩展，扩展据此做**身份级去重**
+                #    （localhost 与 127.0.0.1 两条重复条目互踢就是这么防的）。
+                **_instance_label()}
 
     @register.page(
         "/panel",

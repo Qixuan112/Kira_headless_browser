@@ -87,7 +87,11 @@ class ExtensionBackend(Backend):
         return f"用户浏览器（{br} · 扩展 v{ver}）"
 
     async def close(self) -> None:
-        await self._bridge.close()
+        # ⚠️ **不要**在这里关 bridge：bridge 的生命周期归主插件
+        #    （main.terminate 里 `await self.bridge.close()` 兜底）。
+        #    这里也关一次的话 terminate 会关两遍 —— 幂等不出错，
+        #    但"backend 是否拥有 bridge"的语义会糊掉。
+        return None
 
     #: **只读但敏感**、必须经用户确认的命令。
     #  cookie_get 会把 chrome.cookies.getAll 的**实际取值**回传给插件，
@@ -238,22 +242,27 @@ class ExtensionBackend(Backend):
                                 timeout=limit + 5)
 
     async def screenshot(self, path: str, full_page: bool = False, selector=None) -> OpResult:
-        """扩展用 captureVisibleTab 截图，返回 base64；这里落盘。
+        """扩展截图，返回 base64；这里落盘。
 
-        ⚠️ 扩展侧**只支持可视区域**（captureVisibleTab 就是这个语义）。
-        `full_page` / `selector` 是路由层会传下来的参数，但这里没法实现 ——
-        过去是**默默忽略**它们、照样截一张视口图返回成功，
-        调用方（和模型）以为拿到了整页/元素截图。这是**假成功**。
-        → 现在明确失败，并告诉对方"想整页就显式切到无头后端"。
-        （2026-09-22 起插件**不再**自动换后端：换后端=换操作对象，
-          读/截图还会拿到另一套浏览器的画面。要换必须显式说要换。）
+        两条路线：
+          · 可视区域 —— `captureVisibleTab`（老能力，不需要调试器权限）；
+          · 整页 / 元素 —— 扩展 v1.6.0 起走 **CDP**
+            （`Page.captureScreenshot` + `captureBeyondViewport` / clip）。
+            旧版扩展没有这条路：事前按握手版本拦住，明说怎么更新 ——
+            而不是**默默忽略**整页参数、照样截一张视口图报成功（假成功）。
         """
         if full_page or selector:
-            return OpResult.fail(
-                "扩展只能截可视区域。要整页请显式切到无头"
-                "（browser_backend use=headless，那是另一个浏览器）。",
-                self.name)
-        r = await self._send(self._P.CMD_SCREENSHOT, {})
+            if not self._ext_version_ok(self.CDP_MIN_EXT_VERSION):
+                return OpResult.fail(
+                    f"整页/元素截图需要扩展 v{self.CDP_MIN_EXT_VERSION}+"
+                    f"（走 CDP；当前扩展版本过低或未连接）。"
+                    f"请用插件目录里的 browser-bridge/ 重新加载扩展；"
+                    f"或显式切到无头后端（browser_backend use=headless，"
+                    f"那是另一个浏览器）。",
+                    self.name)
+        r = await self._send(self._P.CMD_SCREENSHOT,
+                             {"full_page": bool(full_page),
+                              "selector": selector or ""})
         if not r.ok:
             return r
         data = r.data or {}
@@ -265,7 +274,12 @@ class ExtensionBackend(Backend):
             payload = img.split(",", 1)[1]
             with open(path, "wb") as f:
                 f.write(base64.b64decode(payload))
-            return OpResult(data={"path": path, "url": data.get("url")}, backend=self.name)
+            out = {"path": path, "url": data.get("url")}
+            # ⚠️ 整页被高度上限截断时**必须让调用方知道** ——
+            #    否则模型会以为"页面就这么长"，漏掉下面的内容。
+            if data.get("truncated"):
+                out["truncated"] = True
+            return OpResult(data=out, backend=self.name)
         except Exception as e:
             return OpResult.fail(f"保存截图失败: {e}", self.name)
 
@@ -286,6 +300,49 @@ class ExtensionBackend(Backend):
         扩展会把这种情况翻译成一句用户能照做的话，而不是一个裸错误。
         """
         return await self._send(self._P.CMD_EXEC_JS, {"script": script})
+
+    #: 扩展从哪个版本起带 CDP（chrome.debugger）能力。
+    #: 低于它的扩展收到 cdp 命令会报"未知命令"，整页/元素截图会被静默降级
+    #: 成可视区截图 —— 所以这里**事前**按握手版本拦住，给能照做的话。
+    CDP_MIN_EXT_VERSION = "1.6.0"
+
+    def _ext_version_ok(self, minimum: str) -> bool:
+        """当前连着的扩展版本 >= minimum 吗（连不上/没报版本都按不满足）。
+
+        ⚠️ 用本模块内置的 `_cmp_semver`，**不要**去借 setup_guide 的
+           compare_versions —— 那是面板模块，后端不该反向依赖它
+           （某些加载顺序下它根本不在 sys.modules 里，版本闸门会静默全拒）。
+        """
+        try:
+            hello = getattr(self._bridge, "_hello", None)
+            cur = getattr(hello, "extension_version", None)
+            if not cur:
+                return False
+            return _cmp_semver(str(cur), minimum) >= 0
+        except Exception:
+            return False
+
+    async def cdp(self, method: str, params: Optional[dict] = None,
+                  tab_id=None) -> OpResult:
+        """CDP 透传（chrome.debugger）：trusted 输入 / 整页截图 / 协议层数据。
+
+        ⚠️ 权限等级与 exec_js 同级：都是"写"，走同一套只读/白名单/确认约束，
+           这里不另设门槛（同样的能力两个标准反而不可预期）。
+        """
+        method = str(method or "").strip()
+        if not method:
+            return OpResult.fail("缺少 method（如 Page.captureScreenshot）",
+                                 self.name)
+        if not self._ext_version_ok(self.CDP_MIN_EXT_VERSION):
+            return OpResult.fail(
+                f"当前扩展不支持 CDP（需要扩展 v{self.CDP_MIN_EXT_VERSION}+）。"
+                f"请用插件目录里的 browser-bridge/ 重新加载一次扩展"
+                f"（chrome://extensions → 开发者模式 → 加载已解压的扩展）。"
+                f"注意：新版本新增了「调试器」权限，浏览器会要求你确认一次。",
+                self.name)
+        return await self._send(self._P.CMD_CDP,
+                                {"method": method, "params": params or {},
+                                 "tab_id": tab_id})
 
     async def upload_file(self, selector: str, file_path: str) -> OpResult:
         """上传本地文件。
@@ -564,3 +621,22 @@ _MIME = {
 def _guess_mime(name: str) -> str:
     import os
     return _MIME.get(os.path.splitext(name)[1].lower(), "application/octet-stream")
+def _cmp_semver(a: str, b: str) -> int:
+    """简化版 semver 比较：按点分数字逐段比，非数字段按 0 算。
+
+    返回 >0 / 0 / <0。解析不了就按"不比对方新"（保守，宁可提示更新）。
+    """
+    def _v(x):
+        out = []
+        for part in str(x).split("."):
+            digits = "".join(ch for ch in part if ch.isdigit())
+            out.append(int(digits) if digits else 0)
+        return out
+    try:
+        va, vb = _v(a), _v(b)
+        n = max(len(va), len(vb))
+        va += [0] * (n - len(va))
+        vb += [0] * (n - len(vb))
+        return (va > vb) - (va < vb)
+    except Exception:
+        return -1

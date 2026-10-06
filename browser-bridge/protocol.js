@@ -84,6 +84,9 @@ export const CMD = {
   BOOKMARKS: "bookmarks",
   HISTORY: "history",
   CLIPBOARD: "clipboard",
+  // CDP 透传（chrome.debugger）：trusted 输入 / 整页截图等 DOM 合成事件
+  // 做不到的能力。与插件侧 protocol.py 的 CMD_CDP 镜像。
+  CDP: "cdp",
 };
 
 // 事件名
@@ -271,7 +274,44 @@ export const STORE = {
    *  为什么落盘：MV3 的 Service Worker 会被回收，内存计数撑不过一次回收；
    *  而用户问"它是不是老在断"时，要的是一个**能看的数字**，不是翻日志。 */
   STALE_RECONNECTS: "kb_stale_reconnects",
+  /** 本扩展实例的稳定随机 id（hello 上报给插件）。
+   *  用途：让服务端分清「同一个扩展重连」（MV3 回收唤醒，正常）与
+   *  「**另一处**连接顶号」（两台浏览器互踢，要告警）。
+   *  必须落盘：Service Worker 被回收后内存 id 会丢，那样每次唤醒都像是
+   *  "另一处连接"，告警就失去意义。 */
+  CLIENT_ID: "kb_client_id",
 };
+
+/**
+ * 主机名归一化 —— 实例去重的**唯一**口径。
+ *
+ * ⚠️ 为什么必须有：实例列表与连接表都用 `host:port` 当去重键，而
+ *  `localhost:5267` 和 `127.0.0.1:5267` 是**同一台服务器**的两个写法 ——
+ *  不归一的话它们会被存成两条实例、各开一条连接，服务端只认一条 →
+ *  两条连接互踢（日志里每几秒一次"主动断开旧连接"的风暴就是这么来的）。
+ *  面板推送配对时发的是 `location.hostname`（可能是 localhost），
+ *  自动发现固定填 127.0.0.1 —— 两条途径一混用就出事。
+ *
+ * 归一只做"板上钉钉等价"的：localhost 族 / ::1 / 尾点写法 → 127.0.0.1。
+ * **不做** DNS 解析（那会变成网络调用，而且多网卡机器上语义不明）。
+ */
+export function normalizeHost(h) {
+  let x = String(h || "").trim().toLowerCase();
+  x = x.replace(/^\[|\]$/g, "");          // 剥 IPv6 方括号
+  x = x.replace(/\.$/, "");               // 尾点（"localhost."）
+  if (!x) return "127.0.0.1";
+  if (x === "localhost" || x.endsWith(".localhost")) return "127.0.0.1";
+  if (x === "::1" || x === "0:0:0:0:0:0:0:1") return "127.0.0.1";
+  if (x === "::ffff:127.0.0.1") return "127.0.0.1";
+  return x;
+}
+
+/** 实例的去重键（归一化之后）。所有列表/连接表一律用它。 */
+export function instanceKey(inst) {
+  const host = normalizeHost((inst && inst.host) || "127.0.0.1");
+  const port = Number((inst && inst.port) || 0) || 5267;
+  return `${host}:${port}`;
+}
 
 // ─── 零配置接入（自动发现 KiraAI 实例）────────────────────────────────────
 /** 插件提供的配对端点：返回**实际端口 + 接入令牌**。

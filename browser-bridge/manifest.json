@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Kira Browser Bridge",
-  "version": "1.5.4",
+  "version": "1.6.0",
   "description": "让 KiraAI 感知并操作你的浏览器（Chrome / Edge / Brave 等 Chromium 系）。支持读页面、点击、输入、执行 JS、上传下载文件。权限由 KiraAI 插件配置控制。",
   "minimum_chrome_version": "135",
   "permissions": [
@@ -18,7 +18,8 @@
     "downloads",
     "clipboardRead",
     "clipboardWrite",
-    "userScripts"
+    "userScripts",
+    "debugger"
   ],
   "host_permissions": [
     "http://127.0.0.1/*",

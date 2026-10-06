@@ -162,7 +162,11 @@ def run(r) -> None:
          not _bad5, f"问题={_bad5 or '无'}")
 
     # ── B6 服务端要能回应扩展主动发来的 ping（否则保活 ping 是单向的）──
+    #    ⚠️ v2.2.0 起 PONG 走 _send_to(sess, ...)（每会话自己的连接）——
+    #    用全局 _send 的话，被替换的旧会话会把帧串到新连接上。
+    #    判据因此认"回 pong 且走每会话发送"这一对组合。
     r.ok("B6 服务端处理扩展主动发来的 ping（回 pong，并重置空闲计时）",
          "MSG_PING" in bridge and "MSG_PONG" in bridge
-         and "await self._send({\"type\": P.MSG_PONG" in bridge,
-         "收到扩展 ping 要回 pong；任何一帧都会把空闲计时清零")
+         and "await self._send_to(sess, {\"type\": P.MSG_PONG" in bridge,
+         "收到扩展 ping 要回 pong（回到自己那条连接）；"
+         "任何一帧都会把空闲计时清零")

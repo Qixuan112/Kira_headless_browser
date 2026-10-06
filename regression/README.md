@@ -114,6 +114,7 @@ regression/
 │   └── screenshot_restore.py 截图·窗口最小化自愈（用完还原窗口，含反自检）
 │   └── filedoc.py          本机文件（file://）能被浏览器打开（两后端 + 反自检）
 │   └── filedoc_e2e.py      打开本机文件（端到端跑 tool_navigate，真插件实例）
+│   └── bridge_arbitration.py 桥接仲裁（先自证后踢人）与重连纪律（2026-10-06 风暴）
 ├── stubs/                  让插件能被 import 的最小替身（不需要真的 KiraAI）
 │   ├── core/               框架接口的最小实现
 │   └── playwright/         **语义忠实的**假 Playwright（见下）
