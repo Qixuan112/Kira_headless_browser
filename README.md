@@ -540,6 +540,23 @@ python -m playwright install chromium
 <details open>
 <summary><b>2.2.x</b> — 重连风暴根治、CDP 远程调试真的来了</summary>
 
+### v2.2.1（2026-10-07）
+
+**修三处「参数名错配」——其中一处是用户当场踩到的 CDP 报错。**
+
+- **`browser_script` 走 CDP 报 `got multiple values for argument 'method'`**：
+  `_call` 的转发通道形参名与后端 `cdp(method=...)` 撞名。已把 `_call` 首参
+  改名 `op` 并注释钉死规矩（转发通道不得与后端方法参数名撞车）。
+- **"📍 现在的页面"一栏永远是空的（静默失效）**：每次写操作后"顺手回带
+  页面状态"的 `get_info(tab_id=...)` 调用，两个后端签名都不收 `tab_id` →
+  TypeError 被 `try/except` 吞掉。两后端已收下 `tab_id`，回带真正生效。
+- **书签工具一调就失败**：`bookmarks` 调用点传 `max=`，而后端签名是
+  `bookmarks(query, limit, ...)`。已改为 `limit=`。
+
+新增回归组「工具分发参数传递」7 条：静态扫描全仓 `_call` 的 kw 与后端签名
+（含 4 种反向注入自检）+ 签名逐字对齐的假后端端到端（CDP/JS 双通道、
+书签、写操作回带页面）。**合计 696 全绿。**
+
 ### v2.2.0（2026-10-06）
 
 **修掉了一个会永不停止的「重连风暴」，并把 CDP（Chrome DevTools Protocol）**
