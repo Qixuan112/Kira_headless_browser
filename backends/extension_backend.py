@@ -484,8 +484,12 @@ class ExtensionBackend(Backend):
                               "mime": (r.data or {}).get("mime")},
                         backend=self.name)
 
-    async def get_info(self) -> OpResult:
-        return await self._send(self._P.CMD_GET_INFO)
+    async def get_info(self, tab_id=None) -> OpResult:
+        # ⚠️ `tab_id` 必须收下：主插件每次写操作后都会用
+        #    `_call("get_info", tab_id=...)` 顺手回带页面状态 —— 签名不收
+        #    的话那个调用抛 TypeError，又被调用方的 try/except 吞掉，
+        #    结果是"📍 现在的页面"一栏**永远是空的**（静默失效，很难发现）。
+        return await self._send(self._P.CMD_GET_INFO, {"tab_id": tab_id})
 
     async def go_back(self) -> OpResult:
         return await self._send(self._P.CMD_GO_BACK)

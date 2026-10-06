@@ -568,7 +568,12 @@ class BrowserPlugin(BasePlugin):
             return [b] if b is not None else self.router.candidates()
         return self.router.candidates()
 
-    async def _call(self, method: str, *, for_write: bool = False, **kw):
+    async def _call(self, op: str, *, for_write: bool = False, **kw):
+        # ⚠️ 第一个形参叫 `op` 而不是 `method`：kw 会原样转发给后端方法
+        #    （`fn(**kw)`），而 cdp 这类后端方法的形参**就叫 method** ——
+        #    如果这里也叫 method，`_call("cdp", method=...)` 会直接抛
+        #    "got multiple values for argument 'method'"（2026-10-07 线上）。
+        #    转发通道的形参名不要和后端方法参数名撞车。
         """调用某个能力：**一个后端，一次机会**。
 
         用哪个由「后端策略」决定（`auto` = 扩展优先，其次无头）。
@@ -599,19 +604,19 @@ class BrowserPlugin(BasePlugin):
                 self._degrade_announced = False          # 首选回来了 → 重新允许提示
                 degrade = ""
             else:
-                degrade = self._degrade_notice(method, candidates[0], backend, tried)
+                degrade = self._degrade_notice(op, candidates[0], backend, tried)
             if for_write:
                 # 写操作前校验目标页面（扩展后端能拿到 URL，无头后端用当前页）
                 err = await self._check_write(backend, kw.get("url"))
                 if err:
                     return err
-            fn = getattr(backend, method, None)
+            fn = getattr(backend, op, None)
             if fn is None:
-                return (f"❌ {backend.display} 不支持「{method}」。\n"
+                return (f"❌ {backend.display} 不支持「{op}」。\n"
                         f"{self._switch_hint()}")
             res = await fn(**kw)
             if res.ok:
-                out = self._render(method, res, backend)
+                out = self._render(op, res, backend)
                 if degrade:
                     out = degrade + out
                 # ⚠️ **动作与结果一体返回**。
@@ -635,7 +640,7 @@ class BrowserPlugin(BasePlugin):
                 # ⚠️ 命令**可能已经在浏览器里生效**，只是没等到回执。
                 #    此时换后端重试 = 同一个点击/输入做两次。
                 #    宁可如实告诉模型"不确定"，也不要重复执行。
-                logger.info(f"[{method}] 结果不确定（可能已执行），不再换后端重试")
+                logger.info(f"[{op}] 结果不确定（可能已执行），不再换后端重试")
                 return (f"⚠️ {res.error}\n"
                         f"这条操作**可能已经在浏览器里生效了**，所以没有自动重试"
                         f"（避免重复执行）。请先查看页面当前状态，再决定要不要重做。")
@@ -643,18 +648,18 @@ class BrowserPlugin(BasePlugin):
                 # ⚠️ 用户明确拒绝了，**立刻停手**，绝不换后端重试。
                 #    否则会出现「我点了拒绝，结果插件换条路把事情做了」——
                 #    这比没有确认机制更糟，因为它让人以为自己拦住了。
-                logger.info(f"[{method}] 用户拒绝了本次操作，已终止（不再尝试其它后端）")
+                logger.info(f"[{op}] 用户拒绝了本次操作，已终止（不再尝试其它后端）")
                 return f"🚫 {res.error}。已按你的决定终止，没有改用其它方式执行。"
 
             # ── 失败：**不换后端**（用户明确要求）─────────────────────────
-            logger.warning(f"[{method}] {backend.display} 失败：{res.error}")
+            logger.warning(f"[{op}] {backend.display} 失败：{res.error}")
             if self.allow_failover:
                 # ⚠️ 这条分支是**故意留着的反向自检通道**：它正是"中途自动换后端"
                 #    的老行为，产品里永远走不到（allow_failover 恒为 False）。
                 #    守卫会把它翻成 True，验证"不许换"这条判据真的能抓到回退。
                 tried.append(f"{backend.display}: {res.error}")
                 continue
-            return self._no_switch_failure(method, backend, res)
+            return self._no_switch_failure(op, backend, res)
 
         # 所有候选都不可用
         detail = "；".join(tried)
@@ -1537,7 +1542,13 @@ class BrowserPlugin(BasePlugin):
             #    这是**读**操作（w=False），不需要回带页面。
             return await self._call("bookmarks", for_write=False,
                                     query=kw.get("query"),
-                                    max=kw.get("amount") or 200,
+                                    # ⚠️ 参数名必须是 `limit` —— 两个后端的签名都是
+                                    #    bookmarks(query, limit, folders_only)。曾经写成
+                                    #    `max=`：TypeError 直接被框架亮成
+                                    #    "Failed to call tool"，书签功能整条不可用
+                                    #    （2026-10-07 与 CDP 的 method 撞名一起查出来的
+                                    #    同类问题，扫描脚本抓的）。
+                                    limit=kw.get("amount") or 200,
                                     folders_only=bool(kw.get("folders_only")))
 
         if a == "click":

@@ -1296,7 +1296,15 @@ class HeadlessBackend(Backend):
 
     # ─── 补齐的能力（原版有，合并时被我漏掉了）─────────────────────
 
-    async def get_info(self) -> OpResult:
+    async def get_info(self, tab_id=None) -> OpResult:
+        # ⚠️ `tab_id` 必须收下：主插件每次写操作后都会用
+        #    `_call("get_info", tab_id=...)` 顺手回带页面状态 —— 签名不收
+        #    的话那个调用抛 TypeError，又被调用方的 try/except 吞掉，
+        #    结果是"📍 现在的页面"一栏**永远是空的**（静默失效）。
+        #    无头只有一张页面：传了别的 tab_id 就如实告知（与其它方法同一套）。
+        msg = self._check_tab_id(tab_id)
+        if msg:
+            return OpResult.fail(msg, self.name)
         err = await self._ready()
         if err:
             return OpResult.fail(err, self.name)
