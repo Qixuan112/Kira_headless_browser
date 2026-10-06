@@ -613,7 +613,8 @@ python -m playwright install chromium
 - `terminate()` 不再重复关闭 bridge（语义归位，无行为变化）。
 - manifest 补 `core_version`；心跳循环改用实例参数（测试可压）。
 
-**自检：新增 52 条（桥接仲裁 34 + 契约/CDP 2 + 其余 16），合计 689 全绿。**
+**自检：新增「桥接仲裁」检查组 34 条（含 15 条真跑扩展代码的 Node 探针），**
+**合计 689 全绿（不依赖框架目录的环境为 671；基线 637）。**
 
 </details>
 
