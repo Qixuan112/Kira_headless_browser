@@ -37,6 +37,7 @@ from . import (
     filedoc,
     filedoc_e2e,
     bridge_arbitration,
+    tool_dispatch,
 )
 
 #: 检查**模块**列表（按顺序执行）。
@@ -75,6 +76,7 @@ ALL_CHECKS = [
     filedoc,             # 本机文件（file://）能被浏览器打开（扩展 + 无头两条路）
     filedoc_e2e,         # 打开本机文件（端到端跑一遍 tool_navigate）
     bridge_arbitration,  # 桥接仲裁（先自证后踢人）与重连纪律（2026-10-06 风暴）
+    tool_dispatch,       # 工具分发参数传递（kw 撞名 / CDP 通道，2026-10-07）
 ]
 
 __all__ = ["ALL_CHECKS"]

@@ -1,7 +1,7 @@
 {
   "display_name": "All-in-One Browser",
   "plugin_id": "headless_browser",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "core_version": ">=2.30.0",
   "icon": "icon.png",
   "author": "nyx+znq19+萧洋",

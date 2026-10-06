@@ -540,6 +540,31 @@ python -m playwright install chromium
 <details open>
 <summary><b>2.2.x</b> — 重连风暴根治、CDP 远程调试真的来了</summary>
 
+### v2.2.1（2026-10-07）
+
+**修四处「参数到不了目的地」——第一处是用户当场踩到的 CDP 报错，
+其余是顺着同一条线索全仓扫描挖出来的。**
+
+- **`browser_script` 走 CDP 报 `got multiple values for argument 'method'`**：
+  `_call` 的转发通道形参名与后端 `cdp(method=...)` 撞名。已把 `_call` 首参
+  改名 `op` 并注释钉死规矩（转发通道不得与后端方法参数名撞车）。
+- **"📍 现在的页面"一栏永远是空的（静默失效）**：每次写操作后"顺手回带
+  页面状态"的 `get_info(tab_id=...)` 调用，两个后端签名都不收 `tab_id` →
+  TypeError 被 `try/except` 吞掉。两后端已收下 `tab_id`，回带真正生效。
+- **书签工具一调就失败**：`bookmarks` 调用点传 `max=`，而后端签名是
+  `bookmarks(query, limit, ...)`。已改为 `limit=`。
+- **`tab_id` 全链路贯通**：工具 schema 收着 `tab_id`，但点击/输入/滚动/
+  悬停/上传/键鼠/前进刷新这些动作**一分都没往后传** —— 指定标签页时动作
+  永远落在"当前活动标签"上。现已从 `tool_interact` → `_call` → 两个后端
+  → 命令参数逐层补通；无头后端传了非 0 的 `tab_id` 会**明确告知**只有
+  一张页面（与其它方法同一套规矩），而不是默默忽略。
+
+新增回归组「工具分发参数传递」13 条：静态扫描全仓 `_call` 的 kw 与后端签名
+（含 4 种反向注入自检）+ 签名逐字对齐的假后端端到端（CDP/JS 双通道、书签、
+写操作回带页面、tab_id 透传）+ **CDP 扩展侧真跑探针**（chrome.debugger 桩：
+attach→send→detach 序列与失败仍摘、整页 16000px 钳制、元素截图 DOM 定位）。
+**合计 702 全绿。**
+
 ### v2.2.0（2026-10-06）
 
 **修掉了一个会永不停止的「重连风暴」，并把 CDP（Chrome DevTools Protocol）**

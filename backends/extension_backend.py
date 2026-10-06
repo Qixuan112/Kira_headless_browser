@@ -221,19 +221,23 @@ class ExtensionBackend(Backend):
             d.setdefault("title", "")
         return OpResult(data=d, backend=self.name)
 
-    async def click(self, selector=None, text=None, index=None, **kw) -> OpResult:
+    async def click(self, selector=None, text=None, index=None, tab_id=None,
+                    **kw) -> OpResult:
         return await self._send(self._P.CMD_CLICK,
-                                {"selector": selector, "text": text, "index": index})
+                                {"selector": selector, "text": text, "index": index,
+                                 "tab_id": tab_id})
 
     async def type_text(self, selector: str, text: str, submit: bool = False,
-                        clear_first: bool = True, **kw) -> OpResult:
+                        clear_first: bool = True, tab_id=None, **kw) -> OpResult:
         return await self._send(self._P.CMD_TYPE,
                                 {"selector": selector, "text": text,
-                                 "submit": bool(submit), "clear_first": bool(clear_first)})
+                                 "submit": bool(submit), "clear_first": bool(clear_first),
+                                 "tab_id": tab_id})
 
-    async def scroll(self, direction: str, amount=None, **kw) -> OpResult:
+    async def scroll(self, direction: str, amount=None, tab_id=None, **kw) -> OpResult:
         return await self._send(self._P.CMD_SCROLL,
-                                {"direction": direction, "amount": amount})
+                                {"direction": direction, "amount": amount,
+                                 "tab_id": tab_id})
 
     async def wait_for(self, selector=None, text=None, timeout: int = 10, **kw) -> OpResult:
         limit = max(1, min(int(timeout or 10), 60))
@@ -344,7 +348,8 @@ class ExtensionBackend(Backend):
                                 {"method": method, "params": params or {},
                                  "tab_id": tab_id})
 
-    async def upload_file(self, selector: str, file_path: str) -> OpResult:
+    async def upload_file(self, selector: str, file_path: str,
+                          tab_id=None) -> OpResult:
         """上传本地文件。
 
         扩展读不到本地磁盘路径，所以插件把文件内容分块送过去，
@@ -388,6 +393,9 @@ class ExtensionBackend(Backend):
             r = await self._send(self._P.CMD_UPLOAD, {
                 "selector": selector, "name": name,
                 "mime": _guess_mime(name),
+                # tab_id 透传：不传的话扩展作用在"当前活动标签"上 ——
+                # 与点击/输入同一套规矩（参数必须到目的地）。
+                "tab_id": tab_id,
                 # ⚠️ **不发绝对路径**：扩展侧只是把它当显示名回显
                 #    （capabilities.js 里 `path: params.path || res.name`），
                 #    并没有真拿它去读文件 —— 内容是由插件侧分块推过去的。
@@ -484,47 +492,60 @@ class ExtensionBackend(Backend):
                               "mime": (r.data or {}).get("mime")},
                         backend=self.name)
 
-    async def get_info(self) -> OpResult:
-        return await self._send(self._P.CMD_GET_INFO)
+    async def get_info(self, tab_id=None) -> OpResult:
+        # ⚠️ `tab_id` 必须收下：主插件每次写操作后都会用
+        #    `_call("get_info", tab_id=...)` 顺手回带页面状态 —— 签名不收
+        #    的话那个调用抛 TypeError，又被调用方的 try/except 吞掉，
+        #    结果是"📍 现在的页面"一栏**永远是空的**（静默失效，很难发现）。
+        return await self._send(self._P.CMD_GET_INFO, {"tab_id": tab_id})
 
-    async def go_back(self) -> OpResult:
-        return await self._send(self._P.CMD_GO_BACK)
+    async def go_back(self, tab_id=None) -> OpResult:
+        return await self._send(self._P.CMD_GO_BACK, {"tab_id": tab_id})
 
-    async def refresh(self) -> OpResult:
-        return await self._send(self._P.CMD_REFRESH)
+    async def refresh(self, tab_id=None) -> OpResult:
+        return await self._send(self._P.CMD_REFRESH, {"tab_id": tab_id})
 
-    async def hover(self, selector: str) -> OpResult:
-        return await self._send(self._P.CMD_HOVER, {"selector": selector})
+    async def hover(self, selector: str, tab_id=None) -> OpResult:
+        return await self._send(self._P.CMD_HOVER,
+                                {"selector": selector, "tab_id": tab_id})
 
-    async def keyboard_type(self, text: str, delay: int = 0) -> OpResult:
+    async def keyboard_type(self, text: str, delay: int = 0, tab_id=None) -> OpResult:
         # 扩展侧没有真正的"逐字输入"，退化为 type 到当前聚焦元素：
         # 用 type 命令 + 当前焦点。这里直接走 key 系列更稳。
         return await self._send(self._P.CMD_TYPE, {"selector": ":focus", "text": text,
-                                                   "clear_first": False})
+                                                   "clear_first": False,
+                                                   "tab_id": tab_id})
 
-    async def keyboard_press(self, key: str) -> OpResult:
-        return await self._send(self._P.CMD_KEY_PRESS, {"key": key})
+    async def keyboard_press(self, key: str, tab_id=None) -> OpResult:
+        return await self._send(self._P.CMD_KEY_PRESS,
+                                {"key": key, "tab_id": tab_id})
 
-    async def keyboard_down_up(self, action: str, key: str) -> OpResult:
+    async def keyboard_down_up(self, action: str, key: str, tab_id=None) -> OpResult:
         cmd = self._P.CMD_KEY_DOWN if action == "down" else self._P.CMD_KEY_UP
-        return await self._send(cmd, {"key": key})
+        return await self._send(cmd, {"key": key, "tab_id": tab_id})
 
-    async def mouse_move(self, x: int, y: int, steps: int = 1) -> OpResult:
-        return await self._send(self._P.CMD_MOUSE_MOVE, {"x": x, "y": y, "steps": steps})
+    async def mouse_move(self, x: int, y: int, steps: int = 1,
+                         tab_id=None) -> OpResult:
+        return await self._send(self._P.CMD_MOUSE_MOVE,
+                                {"x": x, "y": y, "steps": steps, "tab_id": tab_id})
 
     async def mouse_click(self, x=None, y=None, button: str = "left",
-                          click_count: int = 1) -> OpResult:
+                          click_count: int = 1, tab_id=None) -> OpResult:
         return await self._send(self._P.CMD_MOUSE_CLICK, {
-            "x": x, "y": y, "button": button, "click_count": click_count})
+            "x": x, "y": y, "button": button, "click_count": click_count,
+            "tab_id": tab_id})
 
-    async def mouse_down_up(self, action: str, button: str = "left") -> OpResult:
+    async def mouse_down_up(self, action: str, button: str = "left",
+                            tab_id=None) -> OpResult:
         cmd = self._P.CMD_MOUSE_DOWN if action == "down" else self._P.CMD_MOUSE_UP
-        return await self._send(cmd, {"button": button})
+        return await self._send(cmd, {"button": button, "tab_id": tab_id})
 
-    async def mouse_wheel(self, delta_x: int = 0, delta_y: int = 0) -> OpResult:
+    async def mouse_wheel(self, delta_x: int = 0, delta_y: int = 0,
+                          tab_id=None) -> OpResult:
         # 滚轮不改变 URL —— 与无头后端保持同样的返回形状
         r = await self._send(self._P.CMD_MOUSE_WHEEL,
-                             {"delta_x": delta_x, "delta_y": delta_y})
+                             {"delta_x": delta_x, "delta_y": delta_y,
+                              "tab_id": tab_id})
         if not r.ok:
             return r
         d = dict(r.data or {}) if isinstance(r.data, dict) else {}
@@ -532,10 +553,11 @@ class ExtensionBackend(Backend):
         return OpResult(data=d, backend=self.name)
 
     async def mouse_drag(self, start_x: int, start_y: int, end_x: int, end_y: int,
-                         button: str = "left", steps: int = 10) -> OpResult:
+                         button: str = "left", steps: int = 10,
+                         tab_id=None) -> OpResult:
         return await self._send(self._P.CMD_MOUSE_DRAG, {
             "start_x": start_x, "start_y": start_y, "end_x": end_x, "end_y": end_y,
-            "button": button, "steps": steps}, timeout=60.0)
+            "button": button, "steps": steps, "tab_id": tab_id}, timeout=60.0)
 
     async def list_files(self, dir_type: str = "downloads", limit: int = 20) -> OpResult:
         return await self._send(self._P.CMD_LIST_FILES,
