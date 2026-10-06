@@ -38,10 +38,11 @@ from __future__ import annotations
 import ast
 import json
 import os
+import shutil
 import subprocess
 import sys
 
-from ..harness import PLUGIN_DIR, section, src_safe
+from ..harness import JS_DIR, PLUGIN_DIR, section, src_safe
 
 TITLE = "工具分发参数传递（kw 撞名 / CDP 通道）"
 
@@ -255,9 +256,17 @@ class FakeBackend:
         return OpResult(data={"result": "2", "url": "https://a/"},
                         backend="extension")
 
-    async def refresh(self):
-        self.calls.append(("refresh", None))
+    async def refresh(self, tab_id=None):
+        self.calls.append(("refresh", {"tab_id": tab_id}))
         return OpResult(data={"url": "https://a/"}, backend="extension")
+
+    async def click(self, selector=None, text=None, index=None, tab_id=None):
+        # 签名与真实 extension_backend.click 对齐（含 tab_id）——
+        # main 侧丢了 tab_id 的话这里收不到，E5 会翻红。
+        self.calls.append(("click", {"selector": selector, "text": text,
+                                     "index": index, "tab_id": tab_id}))
+        return OpResult(data={"ok": True, "navigated": False, "url": "https://a/"},
+                        backend="extension")
 
 
 class FakeConfig:
@@ -318,6 +327,12 @@ async def main():
 
     OUT["refresh"] = await p.tool_interact(Ev(), action="refresh")
     OUT["refresh_calls"] = [c[0] for c in be.calls]
+    be.calls.clear()
+
+    OUT["click"] = await p.tool_interact(
+        Ev(), action="click", selector="#x", tab_id=7)
+    OUT["click_calls"] = [list(c) for c in be.calls if c[0] == "click"]
+    be.calls.clear()
 
 
 try:
@@ -379,14 +394,49 @@ def _run_e2e(r) -> None:
          "get_info" in ref_calls and "现在的页面" in ref,
          f"调用序列={ref_calls}；回话={(ref or '')[:110]!r}")
 
+    # ⑤ tab_id 全链路：工具收 → _call 传 → 后端转 → 命令带（2026-10-07 补齐）
+    ck_calls = out.get("click_calls") or []
+    ck_ok = (bool(ck_calls) and ck_calls[0][1].get("tab_id") == 7
+             and ck_calls[0][1].get("selector") == "#x")
+    r.ok("E5 browser_interact(click, tab_id=7)：tab_id 一路到后端（不再落在活动标签）",
+         ck_ok, f"后端收到={ck_calls}")
+
+
+
+
+# ══════════════════════════════════════════════════════════════════
+# F 组：CDP 扩展侧真跑探针（chrome.debugger 桩）
+# ══════════════════════════════════════════════════════════════════
+
+def _run_cdp_probe(r) -> None:
+    section("F. CDP 扩展侧：attach→send→detach 纪律 / 整页与元素截图")
+    probe = JS_DIR / "cdp_flow.mjs"
+    node = shutil.which("node")
+    if not probe.is_file():
+        r.ok("F0 CDP 探针存在", False, f"缺少 {probe}")
+        return
+    if not node:
+        r.warn("没有 node，跳过 CDP 行为验证", "安装 Node.js 后可启用")
+        return
+    try:
+        cp = subprocess.run(
+            [node, str(probe)], cwd=str(JS_DIR), capture_output=True,
+            text=True, timeout=60,
+            env={"PATH": os.environ.get("PATH", "") + ":/usr/bin:/bin",
+                 "KIRA_PLUGIN_DIR": str(PLUGIN_DIR)})
+        items = json.loads((cp.stdout or "[]").strip().splitlines()[-1])
+    except Exception as e:
+        r.ok("F0 CDP 探针能跑起来", False, f"{type(e).__name__}: {e}"[:160])
+        return
+    for it in items:
+        r.ok(f"F {it.get('name', '?')}", bool(it.get("ok")),
+             str(it.get("detail", ""))[:150])
+
 
 def run(r) -> None:
-    # T 组失败时 E 组仍要跑（两组验证的问题不同）
-    try:
-        _scan_checks(r)
-    except Exception as e:
-        r.ok("T 组可运行", False, f"{type(e).__name__}: {e}"[:160])
-    try:
-        _run_e2e(r)
-    except Exception as e:
-        r.ok("E 组可运行", False, f"{type(e).__name__}: {e}"[:160])
+    # 各组互不依赖：一组失败不拦其它组
+    for _label, _fn in (("T", _scan_checks), ("E", _run_e2e), ("F", _run_cdp_probe)):
+        try:
+            _fn(r)
+        except Exception as e:
+            r.ok(f"{_label} 组可运行", False, f"{type(e).__name__}: {e}"[:160])

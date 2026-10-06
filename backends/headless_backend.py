@@ -1172,7 +1172,12 @@ class HeadlessBackend(Backend):
             f"再用其它方式读；图片本身可以直接用 browser_file(mode=\"list\") 找到并发送。"
         )
 
-    async def click(self, selector=None, text=None, index=None, **kw) -> OpResult:
+    async def click(self, selector=None, text=None, index=None, tab_id=None, **kw) -> OpResult:
+        # tab_id 全链路（2026-10-07）：无头只有一张页面，传了别的
+        # tab_id 要**明确告知**而不是默默忽略（与其它方法同一套）。
+        _tid_msg = self._check_tab_id(tab_id)
+        if _tid_msg:
+            return OpResult.fail(_tid_msg, self.name)
         err = await self._ready()
         if err:
             return OpResult.fail(err, self.name)
@@ -1203,7 +1208,12 @@ class HeadlessBackend(Backend):
             return OpResult.fail(f"点击失败: {e}", self.name)
 
     async def type_text(self, selector: str, text: str, submit: bool = False,
-                        clear_first: bool = True, **kw) -> OpResult:
+                        clear_first: bool = True, tab_id=None, **kw) -> OpResult:
+        # tab_id 全链路（2026-10-07）：无头只有一张页面，传了别的
+        # tab_id 要**明确告知**而不是默默忽略（与其它方法同一套）。
+        _tid_msg = self._check_tab_id(tab_id)
+        if _tid_msg:
+            return OpResult.fail(_tid_msg, self.name)
         err = await self._ready()
         if err:
             return OpResult.fail(err, self.name)
@@ -1227,7 +1237,12 @@ class HeadlessBackend(Backend):
         except Exception as e:
             return OpResult.fail(f"输入失败: {e}", self.name)
 
-    async def scroll(self, direction: str, amount=None, **kw) -> OpResult:
+    async def scroll(self, direction: str, amount=None, tab_id=None, **kw) -> OpResult:
+        # tab_id 全链路（2026-10-07）：无头只有一张页面，传了别的
+        # tab_id 要**明确告知**而不是默默忽略（与其它方法同一套）。
+        _tid_msg = self._check_tab_id(tab_id)
+        if _tid_msg:
+            return OpResult.fail(_tid_msg, self.name)
         err = await self._ready()
         if err:
             return OpResult.fail(err, self.name)
@@ -1314,7 +1329,12 @@ class HeadlessBackend(Backend):
         except Exception as e:
             return OpResult.fail(f"获取信息失败: {e}", self.name)
 
-    async def go_back(self) -> OpResult:
+    async def go_back(self, tab_id=None) -> OpResult:
+        # tab_id 全链路（2026-10-07）：无头只有一张页面，传了别的
+        # tab_id 要**明确告知**而不是默默忽略（与其它方法同一套）。
+        _tid_msg = self._check_tab_id(tab_id)
+        if _tid_msg:
+            return OpResult.fail(_tid_msg, self.name)
         err = await self._ready()
         if err:
             return OpResult.fail(err, self.name)
@@ -1324,7 +1344,12 @@ class HeadlessBackend(Backend):
         except Exception as e:
             return OpResult.fail(f"返回失败: {e}", self.name)
 
-    async def refresh(self) -> OpResult:
+    async def refresh(self, tab_id=None) -> OpResult:
+        # tab_id 全链路（2026-10-07）：无头只有一张页面，传了别的
+        # tab_id 要**明确告知**而不是默默忽略（与其它方法同一套）。
+        _tid_msg = self._check_tab_id(tab_id)
+        if _tid_msg:
+            return OpResult.fail(_tid_msg, self.name)
         err = await self._ready()
         if err:
             return OpResult.fail(err, self.name)
@@ -1334,7 +1359,12 @@ class HeadlessBackend(Backend):
         except Exception as e:
             return OpResult.fail(f"刷新失败: {e}", self.name)
 
-    async def hover(self, selector: str) -> OpResult:
+    async def hover(self, selector: str, tab_id=None) -> OpResult:
+        # tab_id 全链路（2026-10-07）：无头只有一张页面，传了别的
+        # tab_id 要**明确告知**而不是默默忽略（与其它方法同一套）。
+        _tid_msg = self._check_tab_id(tab_id)
+        if _tid_msg:
+            return OpResult.fail(_tid_msg, self.name)
         err = await self._ready()
         if err:
             return OpResult.fail(err, self.name)
@@ -1345,8 +1375,13 @@ class HeadlessBackend(Backend):
         except Exception as e:
             return OpResult.fail(f"悬停失败: {e}", self.name)
 
-    async def upload_file(self, selector: str, file_path: str) -> OpResult:
+    async def upload_file(self, selector: str, file_path: str, tab_id=None) -> OpResult:
         """上传本地文件到 input[type=file]，绕过系统文件对话框。"""
+        # tab_id 全链路（2026-10-07）：无头只有一张页面，传了别的
+        # tab_id 要**明确告知**而不是默默忽略（与其它方法同一套）。
+        _tid_msg = self._check_tab_id(tab_id)
+        if _tid_msg:
+            return OpResult.fail(_tid_msg, self.name)
         err = await self._ready()
         if err:
             return OpResult.fail(err, self.name)
@@ -1366,7 +1401,12 @@ class HeadlessBackend(Backend):
         except Exception as e:
             return OpResult.fail(f"上传失败: {e}", self.name)
 
-    async def keyboard_type(self, text: str, delay: int = 0) -> OpResult:
+    async def keyboard_type(self, text: str, delay: int = 0, tab_id=None) -> OpResult:
+        # tab_id 全链路（2026-10-07）：无头只有一张页面，传了别的
+        # tab_id 要**明确告知**而不是默默忽略（与其它方法同一套）。
+        _tid_msg = self._check_tab_id(tab_id)
+        if _tid_msg:
+            return OpResult.fail(_tid_msg, self.name)
         err = await self._ready()
         if err:
             return OpResult.fail(err, self.name)
@@ -1378,7 +1418,12 @@ class HeadlessBackend(Backend):
         except Exception as e:
             return OpResult.fail(f"输入失败: {e}", self.name)
 
-    async def keyboard_press(self, key: str) -> OpResult:
+    async def keyboard_press(self, key: str, tab_id=None) -> OpResult:
+        # tab_id 全链路（2026-10-07）：无头只有一张页面，传了别的
+        # tab_id 要**明确告知**而不是默默忽略（与其它方法同一套）。
+        _tid_msg = self._check_tab_id(tab_id)
+        if _tid_msg:
+            return OpResult.fail(_tid_msg, self.name)
         err = await self._ready()
         if err:
             return OpResult.fail(err, self.name)
@@ -1388,7 +1433,12 @@ class HeadlessBackend(Backend):
         except Exception as e:
             return OpResult.fail(f"按键失败: {e}", self.name)
 
-    async def keyboard_down_up(self, action: str, key: str) -> OpResult:
+    async def keyboard_down_up(self, action: str, key: str, tab_id=None) -> OpResult:
+        # tab_id 全链路（2026-10-07）：无头只有一张页面，传了别的
+        # tab_id 要**明确告知**而不是默默忽略（与其它方法同一套）。
+        _tid_msg = self._check_tab_id(tab_id)
+        if _tid_msg:
+            return OpResult.fail(_tid_msg, self.name)
         err = await self._ready()
         if err:
             return OpResult.fail(err, self.name)
@@ -1401,7 +1451,12 @@ class HeadlessBackend(Backend):
         except Exception as e:
             return OpResult.fail(f"操作失败: {e}", self.name)
 
-    async def mouse_move(self, x: int, y: int, steps: int = 1) -> OpResult:
+    async def mouse_move(self, x: int, y: int, steps: int = 1, tab_id=None) -> OpResult:
+        # tab_id 全链路（2026-10-07）：无头只有一张页面，传了别的
+        # tab_id 要**明确告知**而不是默默忽略（与其它方法同一套）。
+        _tid_msg = self._check_tab_id(tab_id)
+        if _tid_msg:
+            return OpResult.fail(_tid_msg, self.name)
         err = await self._ready()
         if err:
             return OpResult.fail(err, self.name)
@@ -1413,7 +1468,12 @@ class HeadlessBackend(Backend):
             return OpResult.fail(f"移动失败: {e}", self.name)
 
     async def mouse_click(self, x=None, y=None, button: str = "left",
-                          click_count: int = 1) -> OpResult:
+                          click_count: int = 1, tab_id=None) -> OpResult:
+        # tab_id 全链路（2026-10-07）：无头只有一张页面，传了别的
+        # tab_id 要**明确告知**而不是默默忽略（与其它方法同一套）。
+        _tid_msg = self._check_tab_id(tab_id)
+        if _tid_msg:
+            return OpResult.fail(_tid_msg, self.name)
         err = await self._ready()
         if err:
             return OpResult.fail(err, self.name)
@@ -1450,7 +1510,12 @@ class HeadlessBackend(Backend):
                 pass
             return OpResult.fail(f"点击失败: {e}", self.name)
 
-    async def mouse_down_up(self, action: str, button: str = "left") -> OpResult:
+    async def mouse_down_up(self, action: str, button: str = "left", tab_id=None) -> OpResult:
+        # tab_id 全链路（2026-10-07）：无头只有一张页面，传了别的
+        # tab_id 要**明确告知**而不是默默忽略（与其它方法同一套）。
+        _tid_msg = self._check_tab_id(tab_id)
+        if _tid_msg:
+            return OpResult.fail(_tid_msg, self.name)
         err = await self._ready()
         if err:
             return OpResult.fail(err, self.name)
@@ -1463,7 +1528,12 @@ class HeadlessBackend(Backend):
         except Exception as e:
             return OpResult.fail(f"操作失败: {e}", self.name)
 
-    async def mouse_wheel(self, delta_x: int = 0, delta_y: int = 0) -> OpResult:
+    async def mouse_wheel(self, delta_x: int = 0, delta_y: int = 0, tab_id=None) -> OpResult:
+        # tab_id 全链路（2026-10-07）：无头只有一张页面，传了别的
+        # tab_id 要**明确告知**而不是默默忽略（与其它方法同一套）。
+        _tid_msg = self._check_tab_id(tab_id)
+        if _tid_msg:
+            return OpResult.fail(_tid_msg, self.name)
         err = await self._ready()
         if err:
             return OpResult.fail(err, self.name)
@@ -1475,7 +1545,12 @@ class HeadlessBackend(Backend):
             return OpResult.fail(f"滚动失败: {e}", self.name)
 
     async def mouse_drag(self, start_x: int, start_y: int, end_x: int, end_y: int,
-                         button: str = "left", steps: int = 10) -> OpResult:
+                         button: str = "left", steps: int = 10, tab_id=None) -> OpResult:
+        # tab_id 全链路（2026-10-07）：无头只有一张页面，传了别的
+        # tab_id 要**明确告知**而不是默默忽略（与其它方法同一套）。
+        _tid_msg = self._check_tab_id(tab_id)
+        if _tid_msg:
+            return OpResult.fail(_tid_msg, self.name)
         err = await self._ready()
         if err:
             return OpResult.fail(err, self.name)
@@ -1564,6 +1639,11 @@ class HeadlessBackend(Backend):
                         tab_id: int = 0) -> OpResult:
         """无头能写（page.evaluate）；**读**多半拿不到（无头页面通常不聚焦）——
         如实报，不装作拿到了空字符串。"""
+        # tab_id 全链路（2026-10-07）：无头只有一张页面，传了别的
+        # tab_id 要**明确告知**而不是默默忽略（与其它方法同一套）。
+        _tid_msg = self._check_tab_id(tab_id)
+        if _tid_msg:
+            return OpResult.fail(_tid_msg, self.name)
         try:
             pg = self._page
             if pg is None:
@@ -1694,6 +1774,11 @@ class HeadlessBackend(Backend):
 
     async def get_selection(self, tab_id: int = 0) -> OpResult:
         """读无头页面里选中的文字（page.evaluate）。"""
+        # tab_id 全链路（2026-10-07）：无头只有一张页面，传了别的
+        # tab_id 要**明确告知**而不是默默忽略（与其它方法同一套）。
+        _tid_msg = self._check_tab_id(tab_id)
+        if _tid_msg:
+            return OpResult.fail(_tid_msg, self.name)
         try:
             pg = self._page
             if pg is None:
