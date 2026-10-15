@@ -540,6 +540,10 @@ python -m playwright install chromium
 <details>
 <summary><b>2.2.x</b> — 重连风暴根治、CDP 远程调试真的来了</summary>
 
+### v2.2.3
+
+  - 兼容 KiraAI 3.0 GA 弃用面：适配器直调 `send_group_message/send_direct_message`（GA 标记 Deprecated wrapper）→ 优先 `get_capability(IMCapability)` 能力口，2.x 无此能力自动回落直调（行为不变）。
+
 ### v2.2.2（2026-10-12）
 
 **3.0 兼容：模型展示不再显示 UUID（可读名优先）。**

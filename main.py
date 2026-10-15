@@ -840,10 +840,20 @@ class BrowserPlugin(BasePlugin):
         adapter, chat_type, target = got
         try:
             chain = MessageChain(elements)
+            # 双世代：3.0 GA 里适配器直调 send_* 已标记弃用，官方路径是
+            # IMCapability；2.x 没有 get_capability，回落到直调（行为不变）。
+            sender = adapter
+            get_cap = getattr(adapter, "get_capability", None)
+            if callable(get_cap):
+                try:
+                    from core.adapter.capabilities import IMCapability
+                    sender = get_cap(IMCapability) or adapter
+                except Exception:
+                    sender = adapter
             if chat_type == "gm":
-                r = await adapter.send_group_message(target, chain)
+                r = await sender.send_group_message(target, chain)
             else:
-                r = await adapter.send_direct_message(target, chain)
+                r = await sender.send_direct_message(target, chain)
             ok = bool(r and getattr(r, "ok", False))
             if not ok:
                 logger.error(f"发送失败: {r}")
